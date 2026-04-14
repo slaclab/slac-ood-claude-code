@@ -975,11 +975,7 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Open Questions
 
-1. **SIF image location:** Where should the production SIF live? Currently
-   at `/sdf/home/y/ytl/k8s/claude-code/claude-code_*.sif`. Needs a
-   shared path like `/sdf/sw/ai/claude-code/` or
-   `/fs/ddn/sdf/group/.../claude-code.sif` so all interactive nodes can
-   reach it.
+1. ~~**SIF image location:**~~ **Resolved for now.** Using `/sdf/home/y/ytl/k8s/claude-code/claude-code_*.sif` for the initial deployment. A TODO comment in `form.js` marks the path for future migration to a shared location (e.g. `/sdf/sw/ai/claude-code/`) when the app moves to production-proper.
 
 2. ~~**Nested tmux sessions:**~~ **Resolved.** No inner tmux session — ttyd
    exec's `claude` directly via PTY. The OOD adapter's outer tmux keeps the

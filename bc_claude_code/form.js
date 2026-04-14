@@ -38,26 +38,26 @@ function mask_api_key() {
 }
 
 // Populate SIF version dropdown from available SIF files.
-// SIF files are named claude-code_<version>.sif under /sdf/sw/ai/claude-code/.
+// SIF files are named claude-code_<version>.sif under SIF_DIR.
 // The list is embedded at render time via ERB so no client-side filesystem access needed.
+// TODO: move SIF_DIR to a shared path (e.g. /sdf/sw/ai/claude-code/) before production.
 function populate_sif_versions() {
   let select = $('#batch_connect_session_context_sif_version');
   select.empty();
-  let sifs = <%= Dir.glob("/sdf/sw/ai/claude-code/claude-code_*.sif")
+  let sifs = <%= Dir.glob("/sdf/home/y/ytl/k8s/claude-code/claude-code_*.sif")
                    .map { |f| File.basename(f, '.sif') }
                    .sort
                    .reverse
                    .to_json %>;
   if (sifs.length === 0) {
-    // Fallback: no SIFs found at the standard path
-    select.append($('<option>', { value: 'latest', text: 'latest (default)' }));
+    select.append($('<option>', { value: '', text: 'No SIF images found — contact admin' }));
     return;
   }
   sifs.forEach(function(name, i) {
     let version = name.replace('claude-code_', '');
     let label = (i === 0) ? version + ' (latest)' : version;
     select.append($('<option>', {
-      value: '/sdf/sw/ai/claude-code/' + name + '.sif',
+      value: '/sdf/home/y/ytl/k8s/claude-code/' + name + '.sif',
       text: label,
       selected: i === 0
     }));

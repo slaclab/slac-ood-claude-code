@@ -82,17 +82,16 @@ function wrappers in `script.sh.erb` — the same pattern `slac-ood-jupyter`
 uses for its per-image `jupyter()` function:
 
 ```bash
-# script.sh.erb — define wrappers then invoke
+# script.sh.erb — direct apptainer exec, no function wrappers
 CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
-function claude() { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" claude "$@"; }
-function ttyd()   { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd "$@"; }
 
-cd "${WORKING_DIR}"
-ttyd --port ${port} \
-     --base-path "/node/${host}/${port}/" \
-     --auth-header X-Forwarded-User \
-     --writable \
-     claude
+apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
+  ttyd --port ${port} \
+       --base-path "/node/${host}/${port}/" \
+       --auth-header X-Forwarded-User \
+       --check-origin \
+       --writable \
+       claude
 ```
 
 OOD reverse-proxies ttyd via `/node/${host}/${port}/`. OOD's `mod_ood_proxy`
@@ -159,16 +158,15 @@ OOD Linux Host Adapter: SSH + tmux to interactive node
   │              │         with ANTHROPIC_AUTH_TOKEN from form
   │              │
   │              ├─ script.sh.erb (runs in cluster-default SIF):
-  │              │    ├─ export CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
-  │              │    ├─ function claude() { apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} claude "$@"; }
-  │              │    ├─ function ttyd()   { apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} ttyd "$@"; }
+  │              │    ├─ CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
   │              │    ├─ cd ${WORKING_DIR:-$HOME}
-  │              │    └─ exec ttyd \
-  │              │         --port ${port} \
-  │              │         --base-path /node/${host}/${port}/ \
-  │              │         --auth-header X-Forwarded-User \
-  │              │         --writable \
-  │              │         claude
+  │              │    └─ exec apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} \
+  │              │              ttyd --port ${port} \
+  │              │                   --base-path /node/${host}/${port}/ \
+  │              │                   --auth-header X-Forwarded-User \
+  │              │                   --check-origin \
+  │              │                   --writable \
+  │              │                   claude
   │              │
   │              └─ after.sh.erb:
   │                   └─ wait_until_port_used ${host}:${port}
@@ -268,7 +266,7 @@ doesn't justify Slurm allocation. Users get instant session starts.
 
 ### ADR-002: Container Invocation Strategy
 
-**Status:** Accepted
+**Status:** Superseded — see update below
 **Date:** 2026-04-14
 
 #### Context
@@ -281,23 +279,22 @@ claude-code SIF. Two approaches were considered:
 run directly in the claude-code SIF. Requires overriding `singularity_bindpath`
 to exclude `/usr` (else ttyd/claude masked). Clean, no nesting.
 
-**Option B (chosen):** Function-wrapper pattern — scripts run in the default SIF;
+**Option B (initially chosen):** Function-wrapper pattern — scripts run in the default SIF;
 `script.sh.erb` defines shell functions that call `apptainer exec $SIF <cmd>`.
 This mirrors exactly how `slac-ood-jupyter` invokes its per-experiment containers.
 
-#### Decision
-**Option B — function-wrapper pattern.** Chosen to stay consistent with
-`slac-ood-jupyter` and avoid any per-app cluster config changes. Nested
-`apptainer exec` (default SIF → claude-code SIF) must be validated in Phase 0.
+#### Decision (revised 2026-04-14)
+**Direct `apptainer exec` — no function wrappers.** The function-wrapper pattern is wrong
+here because ttyd must exec `claude` as a child process inside the same SIF. With wrappers,
+that would require a nested `apptainer exec` inside the ttyd process, which is fragile.
+Instead, `script.sh.erb` calls `apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd ... claude`
+directly — ttyd and claude are both in the SIF, so claude is on PATH naturally.
 
 #### Consequences
-- `script.sh.erb` defines `claude()` and `ttyd()` wrapper functions
-- `-B` bindpath set explicitly in each wrapper (`/sdf,/fs,/lscratch`) — avoids
-  the cluster-default `/usr` overlay problem
-- Nested singularity may fail if user namespaces or setuid are not configured
-  on interactive nodes — **must test in Phase 0**
-- `before.sh.erb` runs in the default SIF; only OOD helpers (`find_port`,
-  `create_passwd`) and standard shell tools are needed there
+- `script.sh.erb` has no function wrappers — just a direct `apptainer exec` call
+- `-B` bindpath set explicitly (`/sdf,/fs,/lscratch`) — avoids the cluster-default `/usr` overlay
+- No nested apptainer risk
+- `before.sh.erb` still runs in the cluster-default SIF — only needs `find_port` and standard shell tools, which is fine
 
 ---
 
@@ -357,11 +354,10 @@ FR-3: before.sh.erb finds a free port, validates the working directory,
       key and SLAC LiteLLM proxy URL. Uses a randomized heredoc delimiter
       to prevent injection if the API key contains the delimiter string.
 
-FR-4: script.sh.erb defines `ttyd()` and `claude()` shell function wrappers
-      invoking `apptainer exec -B /sdf,/fs,/lscratch $SIF <cmd>` (the
-      slac-ood-jupyter pattern). ttyd() is called directly (not via exec)
-      so the wrapper is invoked. ttyd then runs claude as its subprocess
-      inside the same SIF, where claude is on PATH naturally.
+FR-4: script.sh.erb calls `apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd ... claude`
+      directly. ttyd and claude are both in the same SIF — ttyd execs claude as its
+      PTY subprocess naturally, with no nested apptainer required. No function
+      wrappers needed.
 
 FR-4a: form.yml.erb includes a `sif_version` dropdown populated at render
        time by form.js via ERB glob of /sdf/sw/ai/claude-code/claude-code_*.sif,
@@ -969,7 +965,11 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Problems & Solutions
 
-<!-- Add entries as you hit walls during implementation. -->
+### Problem: Function-wrapper pattern introduces unnecessary nested apptainer exec
+**Encountered:** 2026-04-14
+**Root cause:** The slac-ood-jupyter function-wrapper pattern was adopted wholesale, but it's the wrong model here. In slac-ood-jupyter, the scripts run inside the cluster-default SIF and the `jupyter()` wrapper calls `apptainer exec $SIF jupyter` — one level of nesting. In our design, `ttyd()` would call `apptainer exec $SIF ttyd`, and ttyd would then need to call `claude` — but `claude` is only in the SIF, not on the host. This means `claude` would either fail (not on PATH in the cluster-default env) or require a second `apptainer exec` nested inside ttyd's process — which is both fragile and unnecessary.
+**Solution:** Drop the function wrappers entirely. Call `apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd ... claude` directly in `script.sh.erb`. Since ttyd and claude are both in the same SIF, ttyd can exec `claude` via PTY naturally — no nesting, no wrappers, no PATH issues.
+**Lesson:** The function-wrapper pattern is the right model when you want to selectively invoke a secondary container for one tool while running everything else in the default env. Here, both tools live in the same SIF and ttyd must be able to exec claude as a child process — direct `apptainer exec` is the correct primitive.
 
 ---
 

@@ -3,6 +3,11 @@
 # SIF image path (set in before.sh.erb, exported into this script)
 CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
 
+# Ignore SIGHUP — the OOD linux_host adapter sends SIGHUP to the process group
+# after signalling readiness; without this ttyd exits immediately after after.sh.erb
+# reports the port open.
+trap '' SIGHUP
+
 # Change to working directory
 cd "${WORKING_DIR}"
 
@@ -13,12 +18,12 @@ cd "${WORKING_DIR}"
 # --auth-header: OOD mod_ood_proxy injects X-Forwarded-User server-side on all
 #   /node/<host>/<port>/ requests — no password needed
 # --writable: enable PTY input (required for interactive claude-code)
-# --check-origin: block WebSocket connections from unexpected origins (defence-in-depth)
+# Note: --check-origin omitted — OOD's reverse proxy sends a different Origin header
+#   than ttyd's listening address, causing WebSocket connections to be refused.
 apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
   ttyd \
     --port ${port} \
     --base-path "/node/${host}/${port}/" \
     --auth-header X-Forwarded-User \
-    --check-origin \
     --writable \
     claude

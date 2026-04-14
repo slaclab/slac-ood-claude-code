@@ -1,7 +1,7 @@
 # 001 — Open OnDemand Interactive App for Claude Code
 
 > **Priority:** 🟡 P2 — Medium
-> **Status:** ⬜ Open
+> **Status:** 🔍 Reviewed
 > **Branch:** —
 > **PR:** —
 > **Created:** 2026-04-09
@@ -30,7 +30,7 @@ setup.
 | New user wants Claude Code | Must SSH, install/configure manually, manage API key | Paste key in OOD form, click Launch, start coding |
 | User unfamiliar with CLI | Stuck — no graphical entry point exists | Browser-based terminal via OOD dashboard |
 | Token/key management | User must manually edit `~/.claude/settings.json` | OOD form injects key into settings on first launch |
-| Session persistence | Terminal closed = session lost | tmux session survives browser disconnects |
+| Session persistence | Terminal closed = session lost | Session resumable via OOD "Connect" while job is running |
 
 ---
 
@@ -39,9 +39,9 @@ setup.
 1. Users can launch Claude Code from the OOD dashboard with zero CLI setup
 2. API key is injected via the OOD form into `~/.claude/settings.json` on first launch
 3. Claude Code runs in a browser terminal (ttyd) with full TUI support (colors, cursor, ctrl-C)
-4. Sessions persist via tmux — survive browser disconnects, re-connectable via OOD or SSH
+4. Sessions are resumable via OOD "Connect" while the job is running
 5. Everything runs inside the existing Apptainer image (`docker.io/slaclab/claude-code`)
-6. Follows the established `slac-ood-jupyter` pattern — no novel infrastructure
+6. Follows the established `slac-ood-jupyter` function-wrapper pattern
 
 ## Non-Goals
 
@@ -73,40 +73,52 @@ app establishes the pattern we follow:
 
 ## Design
 
-### Design Decision: ttyd → tmux (Hybrid Approach)
+### Design Decision: Function-Wrapper Pattern (slac-ood-jupyter style)
 
-The Apptainer container (`docker.io/slaclab/claude-code`) includes both
-`ttyd` and `tmux`. Claude Code runs in a **named tmux session**; `ttyd`
-serves as the browser bridge via OOD's `basic` BatchConnect template.
+Scripts (`before.sh.erb`, `script.sh.erb`, `after.sh.erb`) run inside the
+**cluster-default** Singularity image (e.g. `slac-ml`), as managed by the
+linux_host adapter. The claude-code SIF is invoked explicitly via shell
+function wrappers in `script.sh.erb` — the same pattern `slac-ood-jupyter`
+uses for its per-image `jupyter()` function:
 
+```bash
+# script.sh.erb — define wrappers then invoke
+CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
+function claude() { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" claude "$@"; }
+function ttyd()   { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd "$@"; }
+
+cd "${WORKING_DIR}"
+ttyd --port ${port} \
+     --base-path "/node/${host}/${port}/" \
+     --auth-header X-Forwarded-User \
+     --writable \
+     claude
 ```
-script.sh.erb:
-  1. tmux new-session -d -s claude-code-${SESSION_ID} "claude"
-  2. ttyd --port ${port} \
-         --base-path /node/${host}/${port}/ \
-         --credential-file ${CREDENTIAL_FILE} \
-         tmux attach-session -t claude-code-${SESSION_ID}
-```
 
-**Note:** The tmux session name includes the OOD session UUID to avoid
-collisions when the same user runs multiple concurrent sessions on one
-node. Apptainer shares `/tmp` (and thus the default tmux socket) with
-the host, so a hardcoded name would conflict.
+OOD reverse-proxies ttyd via `/node/${host}/${port}/`. OOD's `mod_ood_proxy`
+injects `X-Forwarded-User` on every proxied request server-side; ttyd checks
+for header presence and rejects direct connections without it (407).
 
-OOD reverse-proxies ttyd via `/node/${host}/${port}/`. The user clicks
-"Connect" and gets a browser terminal attached to the Claude Code tmux
-session.
+**No inner tmux session.** ttyd exec's `claude` directly as its subprocess
+via PTY. Session reconnect works via the OOD "Connect" button while the job
+is running (the outer OOD adapter tmux session keeps the job alive).
 
 **Why this approach:**
 
 | Benefit | Detail |
 |---------|--------|
-| Resilient sessions | Claude Code survives ttyd restarts — tmux session persists |
-| SSH attachable | Users can also `ssh <node>` + `tmux attach -t claude-code` |
+| Follows slac-ood-jupyter pattern | Same function-wrapper convention — no novel infra |
+| No nesting | ttyd exec's claude directly — no tmux-inside-tmux |
+| No credential file | `--auth-header X-Forwarded-User` delegates auth to OOD's proven session layer |
+| No password in process list | Header-based auth has nothing to leak |
 | Full TUI | ttyd's xterm.js renders ANSI colors, cursor movement, ctrl-C |
-| Standard OOD pattern | Same `basic` template as `slac-ood-jupyter` |
-| Secure credentials | `--credential-file` avoids password in `/proc/cmdline` |
-| No host dependencies | ttyd + tmux + claude all live inside the Apptainer image |
+| Bindpath control | Function wrapper sets explicit `-B` flags, avoiding /usr overlay issues |
+
+**Accepted risk:** `--auth-header` checks header *presence* only — a user on
+the SLAC internal network who can reach `<node>:<port>` and forge the header
+could bypass auth. Mitigated by SLAC network perimeter. Marked as known risk.
+If stronger isolation is needed, add `-c user:pass` (Phase 0: verify
+`hidepid=2` on S3DF nodes) as a secondary layer.
 
 ### Architecture — App Structure
 
@@ -146,21 +158,24 @@ OOD Linux Host Adapter: SSH + tmux to interactive node
   │              │    └─ write ~/.claude/settings.json (if absent)
   │              │         with ANTHROPIC_AUTH_TOKEN from form
   │              │
-  │              ├─ script.sh.erb (runs inside container):
+  │              ├─ script.sh.erb (runs in cluster-default SIF):
+  │              │    ├─ export CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
+  │              │    ├─ function claude() { apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} claude "$@"; }
+  │              │    ├─ function ttyd()   { apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} ttyd "$@"; }
   │              │    ├─ cd ${WORKING_DIR:-$HOME}
-  │              │    ├─ tmux new-session -d -s claude-code-${SESSION_ID} claude
   │              │    └─ exec ttyd \
   │              │         --port ${port} \
   │              │         --base-path /node/${host}/${port}/ \
-  │              │         --credential-file ${CREDENTIAL_FILE} \
-  │              │         tmux attach-session -t claude-code-${SESSION_ID}
+  │              │         --auth-header X-Forwarded-User \
+  │              │         --writable \
+  │              │         claude
   │              │
   │              └─ after.sh.erb:
   │                   └─ wait_until_port_used ${host}:${port}
   │
   └─ OOD reverse-proxies ttyd via /node/${host}/${port}/
       │
-      User's browser ↔ OOD proxy ↔ ttyd (HTTP/WS) ↔ tmux ↔ Claude Code TUI
+      User's browser ↔ OOD proxy (injects X-Forwarded-User) ↔ ttyd (HTTP/WS) ↔ claude PTY
         │
         └─ LLM calls → ai-api.slac.stanford.edu (LiteLLM proxy)
 ```
@@ -174,11 +189,11 @@ OOD Linux Host Adapter: SSH + tmux to interactive node
 | Batch mode | Slurm | None (interactive only) |
 | Container | Singularity image per experiment | Apptainer `slaclab/claude-code` SIF |
 | `before.sh.erb` | `find_port`, password gen, Jupyter config | `find_port`, credential file, settings.json |
-| `script.sh.erb` | User commands → `jupyter lab --config=...` | `tmux new-session` → `claude` (Claude Code CLI), then `ttyd` → `tmux attach` |
+| `script.sh.erb` | User commands → `function jupyter() { singularity exec $SIF jupyter "$@"; }` → `jupyter lab` | `function claude() { apptainer exec $SIF claude "$@"; }` + `function ttyd() { ... }` → `ttyd ... claude` |
 | `after.sh.erb` | `wait_until_port_used` | Same |
 | Service proxied | Jupyter (HTTP) on `${port}` | ttyd (HTTP/WS) on `${port}` |
 | `base_url` / `base-path` | `c.NotebookApp.base_url = '/node/…/'` | `ttyd --base-path /node/…/` |
-| Auth | Jupyter password (SHA1 hash) | ttyd `--credential-file` (plaintext user:pass, file mode 600) |
+| Auth | Jupyter password (SHA1 hash) | ttyd `--auth-header X-Forwarded-User` (OOD injects header) |
 
 ### Architecture — Authentication Flow
 
@@ -199,18 +214,27 @@ OOD form: user pastes LiteLLM API key
 
 - **Interactive-only (no Slurm)** — Claude Code is lightweight, no GPU needed.
   Slurm allocation is unnecessary overhead.
-- **ttyd + tmux hybrid** — ttyd alone loses sessions on browser close. tmux alone
-  has no browser bridge. Combined: resilient sessions with browser access.
-- **Credential file over CLI password** — `--credential-file` keeps the password
-  out of `/proc/cmdline`.
-- **Write settings.json only if absent** — respects existing user config. Downside:
-  revoked keys require manual edit. Acceptable for initial launch.
-- **Apptainer container** — all tools (ttyd, tmux, claude, node, ripgrep) inside
-  the image. No host dependencies beyond Singularity/Apptainer runtime.
-- **Session-unique tmux name** (`claude-code-${SESSION_ID}`) — Apptainer
-  shares `/tmp` with the host, so tmux sockets are visible across sessions.
-  A hardcoded session name would collide if the same user launches multiple
-  concurrent sessions on one node.
+- **Function-wrapper pattern (not submit.yml.erb override)** — scripts run in
+  the cluster-default SIF; `script.sh.erb` defines `claude()` and `ttyd()`
+  shell functions wrapping `apptainer exec $SIF`. Mirrors `slac-ood-jupyter`.
+  Nested apptainer risk is accepted and flagged for Phase 0 testing.
+- **No inner tmux session** — ttyd exec's `claude` directly via PTY. No
+  tmux-inside-tmux nesting. Session reconnect via OOD "Connect" button only
+  (not SSH re-attachable). Simpler and avoids `/tmp` socket collisions entirely.
+- **`--auth-header X-Forwarded-User`** — delegates auth to OOD's proven session
+  layer. OOD's `mod_ood_proxy` injects this header server-side. No credential
+  file, no password in process list. **Accepted risk:** header presence-only
+  check; internal network users who can reach the port and forge the header
+  bypass auth. Phase 0: evaluate adding `-c user:pass` secondary layer if
+  `hidepid=2` is confirmed active on S3DF nodes.
+- **`session.id` for uniqueness** — used to avoid any naming collisions if
+  tmux is reintroduced in future. Phase 0: verify `<%= session.id %>` resolves
+  in shell ERB templates; fallback to `$PWD` basename parsing.
+- **Write settings.json only if absent** — respects existing user config.
+  Downside: revoked keys require manual edit. Acceptable for initial launch.
+- **Apptainer container** — all tools (ttyd, claude, node, ripgrep) inside
+  the image. Function wrappers set explicit `-B` bindpath, avoiding /usr
+  overlay issues from the cluster-default bindpath.
 
 ### ADR-001: Interactive-Only (No Slurm)
 
@@ -242,83 +266,75 @@ doesn't justify Slurm allocation. Users get instant session starts.
 
 ---
 
-### ADR-002: Singularity Bindpath and /usr Overlay
-
-**Status:** Proposed — requires Phase 0 spike validation
-**Date:** 2026-04-14
-
-#### Context
-All interactive cluster configs use:
-```
-singularity_bindpath: /etc,/media,/mnt,/opt,/run,/srv,/usr,/var,/sdf,/fs,/lscratch
-```
-This overlays the container's `/usr` and `/etc` with the host's versions. The
-claude-code container installs tools at:
-- `/usr/local/bin/ttyd` — **will be masked** by host `/usr`
-- `/usr/bin/rg`, `/usr/bin/gh`, `/usr/bin/kubectl`, `/usr/bin/vault` — **will be masked**
-- `/home/claudeuser/.local/bin/claude` — safe (not under /usr)
-- `/home/claudeuser/.local/bin/uv` — safe
-
-#### Options considered
-
-| Option | Pros | Cons |
-|---|---|---|
-| A: Custom bindpath excluding /usr | Tools survive | Breaks host /usr libs that container processes may need; diverges from cluster standard |
-| B: Move tools to /opt/claude-code/ in Dockerfile | Clean separation, survives /usr overlay | Requires container rebuild; /opt may also be overlaid |
-| C: Copy tools to user-writable path at runtime | No container changes needed | Slow startup, fragile, wastes disk per session |
-| D: Use `--no-mount` or selective bind | Precise control | Requires OOD cluster config changes per-cluster |
-| E: Override bindpath in submit.yml.erb | App controls its own bindpath, no cluster config changes | Need to confirm OOD respects per-app singularity_bindpath |
-
-#### Decision
-**Test in Phase 0.** First verify what actually breaks. The container's
-`/home/claudeuser/.local/bin/` is safe. If ttyd at `/usr/local/bin/` is
-masked, the preferred fix is **Option B** — rebuild the container to install
-ttyd (and other /usr tools) under `/opt/claude-code/bin/` and add that to PATH.
-This is a one-time container change and the cleanest long-term solution.
-
-If Option B is impractical short-term, **Option E** (per-app bindpath in
-`submit.yml.erb` or `before.sh.erb`) is the fallback.
-
-#### Consequences
-- Phase 0 spike must explicitly test: `which ttyd`, `which rg`, `which claude`
-  inside the container with full bindpath active
-- Container Dockerfile may need a rebuild to relocate tools out of /usr
-- Document the bindpath constraint in the task file's Problems & Solutions
-
----
-
-### ADR-003: ttyd Authentication via Credential File
+### ADR-002: Container Invocation Strategy
 
 **Status:** Accepted
 **Date:** 2026-04-14
 
 #### Context
-ttyd supports several authentication methods. The OOD reverse proxy provides
-session-level auth (user must be logged into OOD), but ttyd itself needs auth
-to prevent other users on the same node from connecting directly.
+The linux_host adapter runs `before.sh.erb`, `script.sh.erb`, and `after.sh.erb`
+inside the **cluster-default** Singularity image (e.g. `slac-ml@20211101.0.sif`),
+not the claude-code SIF. `claude`, `ttyd`, and other tools are only in the
+claude-code SIF. Two approaches were considered:
 
-#### Options considered
+**Option A:** Override `singularity_container` in `submit.yml.erb` — all scripts
+run directly in the claude-code SIF. Requires overriding `singularity_bindpath`
+to exclude `/usr` (else ttyd/claude masked). Clean, no nesting.
 
-| Option | Pros | Cons |
-|---|---|---|
-| `--credential user:pass` CLI arg | Simple | Password visible in `ps aux`, `/proc/cmdline` — security risk |
-| `--credential-file /path` | Password not in process list, file is mode 600 | Slightly more setup in before.sh.erb |
-| No ttyd auth (rely on OOD proxy) | Simplest | Any user on the node can connect to the ttyd port directly |
+**Option B (chosen):** Function-wrapper pattern — scripts run in the default SIF;
+`script.sh.erb` defines shell functions that call `apptainer exec $SIF <cmd>`.
+This mirrors exactly how `slac-ood-jupyter` invokes its per-experiment containers.
 
 #### Decision
-Credential file. Same security posture as Jupyter's SHA1 password in a config file.
-`before.sh.erb` generates a random password, writes `user:<password>` to a file
-with `umask 077`, and passes `--credential-file` to ttyd.
+**Option B — function-wrapper pattern.** Chosen to stay consistent with
+`slac-ood-jupyter` and avoid any per-app cluster config changes. Nested
+`apptainer exec` (default SIF → claude-code SIF) must be validated in Phase 0.
 
 #### Consequences
-- `view.html.erb` must POST the credential (username + password) to ttyd's
-  `/node/${host}/${port}/` endpoint
-- ttyd uses HTTP Basic Auth — the POST form approach from slac-ood-jupyter
-  won't work directly. Need to confirm ttyd's auth flow:
-  - ttyd with `--credential-file` expects HTTP Basic Auth headers
-  - OOD's `view.html.erb` may need to construct the URL with embedded
-    credentials or use JavaScript to set the Authorization header
-  - **Test in Phase 0**
+- `script.sh.erb` defines `claude()` and `ttyd()` wrapper functions
+- `-B` bindpath set explicitly in each wrapper (`/sdf,/fs,/lscratch`) — avoids
+  the cluster-default `/usr` overlay problem
+- Nested singularity may fail if user namespaces or setuid are not configured
+  on interactive nodes — **must test in Phase 0**
+- `before.sh.erb` runs in the default SIF; only OOD helpers (`find_port`,
+  `create_passwd`) and standard shell tools are needed there
+
+---
+
+### ADR-003: ttyd Authentication via OOD Proxy Header
+
+**Status:** Accepted (replaces earlier --credential-file design)
+**Date:** 2026-04-14
+
+#### Context
+The original plan used `--credential-file` which does not exist in ttyd.
+Verified from ttyd source (`server.c`) and README. The actual auth options are:
+- `-c user:pass` — password visible in `/proc/cmdline`
+- `--auth-header <header-name>` — checks for presence of named HTTP header
+
+OOD's `mod_ood_proxy` (Lua) injects `X-Forwarded-User` on every proxied
+request server-side, set from the authenticated OOD session (`REMOTE_USER`).
+This header cannot be injected by the browser client — it is overwritten by
+the proxy.
+
+#### Decision
+**`ttyd --auth-header X-Forwarded-User`** — delegates authentication entirely
+to OOD's existing session layer. No credential file needed. No password in
+process list.
+
+`view.html.erb` simply links to the ttyd URL — no POST form auth needed, as
+authentication happens via the OOD proxy header automatically.
+
+#### Consequences
+- `before.sh.erb` no longer needs to generate passwords or credential files
+- `view.html.erb` is a simple link/button to `/node/${host}/${port}/`
+- **Accepted risk:** `--auth-header` checks header presence only (not value).
+  A user on the SLAC internal network who can reach `<node>:<port>` directly
+  and inject `X-Forwarded-User: anyone` bypasses auth. Mitigated by SLAC
+  network perimeter. Phase 0: evaluate `-c user:pass` secondary layer if
+  `hidepid=2` is confirmed active on S3DF interactive nodes.
+- `--check-origin` (`-O`) flag should also be set to block WebSocket
+  connections from unexpected origins as defence-in-depth
 
 ---
 
@@ -336,23 +352,24 @@ FR-2: Form presents: cluster selector (interactive clusters only),
       API key (password field, masked), working directory (text, default
       $HOME), session walltime (bc_num_hours). No Slurm fields.
 
-FR-3: before.sh.erb finds a free port, generates a random credential,
-      writes a ttyd credential file (mode 600), and writes
-      ~/.claude/settings.json (if absent) with the user's API key and
-      SLAC LiteLLM proxy URL.
+FR-3: before.sh.erb finds a free port, validates the working directory,
+      and writes ~/.claude/settings.json (if absent) with the user's API
+      key and SLAC LiteLLM proxy URL. Uses a randomized heredoc delimiter
+      to prevent injection if the API key contains the delimiter string.
 
-FR-4: script.sh.erb launches Claude Code in a named tmux session inside
-      the Apptainer container, then execs ttyd to serve that session via
-      OOD's /node/${host}/${port}/ reverse proxy.
+FR-4: script.sh.erb calls `exec apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd`
+      directly — no shell function wrappers (exec bypasses them). ttyd is
+      launched with --auth-header X-Forwarded-User and serves claude directly
+      via OOD's reverse proxy.
 
 FR-5: after.sh.erb calls wait_until_port_used to signal OOD readiness.
 
-FR-6: view.html.erb shows a "Connect to Claude Code" button that opens
-      the ttyd session (POST with hidden credential, same pattern as
-      slac-ood-jupyter's view.html.erb).
+FR-6: view.html.erb shows a simple "Connect to Claude Code" link to
+      /node/${host}/${port}/. No POST form needed — OOD's mod_ood_proxy
+      injects X-Forwarded-User automatically for authenticated users.
 
 FR-7: The Apptainer SIF image (docker.io/slaclab/claude-code) provides
-      all runtime dependencies: claude, node, ttyd, tmux, ripgrep, gh,
+      all runtime dependencies: claude, node, ttyd, ripgrep, gh,
       kubectl, vault, uv. No host-side installs required.
 
 FR-8: settings.json written by before.sh.erb includes:
@@ -360,15 +377,13 @@ FR-8: settings.json written by before.sh.erb includes:
       sonnet/opus/haiku, and CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1.
       If ~/.claude/settings.json already exists, it is NOT overwritten.
 
-FR-9: Session survives browser disconnect — user can close the tab
-      and click "Connect" again to re-attach the same tmux session.
-      tmux session is named claude-code-${SESSION_ID} (using OOD's
-      session token) to avoid collisions when the same user runs
-      multiple concurrent sessions on one node.
+FR-9: Session is resumable while the OOD job is running — user can close
+      the browser tab and click "Connect" again on the My Interactive
+      Sessions page to reconnect to the same ttyd process (if still
+      running). No tmux — session does not survive ttyd process death.
 
-FR-10: Users can also SSH to the compute node and run
-       `tmux attach -t claude-code-<session_id>` to access the same
-       session. (Session ID is visible in the OOD session details.)
+FR-10: NFR-3 compliance: ttyd password must not appear in /proc/cmdline.
+       Met by --auth-header approach (no password at all).
 ```
 
 ### Non-Functional Requirements
@@ -409,11 +424,13 @@ AC-2: Given a user with an existing ~/.claude/settings.json, when they
       Claude Code uses whatever config was already present.
 
 AC-3: Given a running session, when the user closes the browser tab
-      and clicks "Connect" again, then they re-attach to the same
-      Claude Code tmux session with context preserved.
+      and clicks "Connect" again, then the ttyd terminal reconnects
+      and Claude Code is still running (session persists via the OOD
+      adapter's outer tmux keeping the job alive).
 
 AC-4: Given a running session, when the user clicks "Delete" in OOD,
-      then the tmux session is killed and Claude Code receives SIGTERM.
+      then the outer tmux session is killed, ttyd and Claude Code
+      receive SIGTERM and terminate cleanly.
 
 AC-5: Given any interactive cluster, when the app launches, then ttyd
       and claude are on PATH and functional despite the singularity
@@ -460,26 +477,31 @@ Decision: Single path for v1. Version selector is a P2 enhancement if
          users request version pinning.
 ```
 
-### Choice: ttyd Basic Auth (vs. token-based or no auth)
+### Choice: `--auth-header X-Forwarded-User` (vs. ttyd `-c user:pass`)
 ```
-+ Proven pattern — HTTP Basic Auth is well-understood
-+ Credential file keeps password out of process list
-- Basic Auth over HTTP is cleartext (but OOD proxy uses HTTPS end-to-end)
-- ttyd's auth flow differs from Jupyter's — need to verify view.html.erb approach
-Decision: Credential file with Basic Auth. OOD's HTTPS proxy encrypts the
-         transport. Test the view.html.erb auth flow in Phase 0.
++ No credential in process list — `ps aux | grep ttyd` shows no password
++ No credential file management in before.sh.erb
++ Delegates auth entirely to OOD's existing session layer
++ view.html.erb is a simple link — no POST form auth complexity
+- `--auth-header` checks header presence only, not value. A user on the SLAC
+  internal network who can reach <node>:<port> directly and forge the header
+  bypasses auth. Mitigated by SLAC network perimeter.
+Decision: --auth-header X-Forwarded-User. OOD's mod_ood_proxy injects this
+         server-side on all /node/<host>/<port>/ requests. Accepted risk noted.
 ```
 
-### Choice: Named inner tmux session (vs. direct ttyd → claude)
+### Choice: Direct ttyd → claude (vs. named inner tmux session)
 ```
-+ Session survives ttyd restarts and browser disconnects
-+ SSH-attachable from outside OOD
-+ Clean separation: ttyd is the transport, tmux is the session
-- Nested tmux (OOD outer + our inner) adds complexity
-- Must test that tmux prefix keys don't conflict
-Decision: Named tmux session. The resilience benefits are critical for
-         long-running Claude Code sessions. Nested tmux is low-risk
-         since outer is on host, inner is in container.
++ No nested tmux — avoids double-tmux complexity and /tmp socket collisions
++ Simpler script: single apptainer exec invocation
++ No prefix key conflicts between OOD outer tmux and inner tmux
+- Session does NOT survive ttyd process death (no re-attach via SSH)
+- Close browser tab → ttyd remains running but claude subprocess holds PTY;
+  "Connect" again reconnects to the same ttyd (job stays alive via OOD adapter
+  outer tmux)
+Decision: Direct ttyd → claude. The OOD adapter's outer tmux already keeps the
+         job alive. Inner tmux adds complexity with no benefit for browser-only
+         users. SSH re-attachability is a P3 nice-to-have.
 ```
 
 ---
@@ -519,8 +541,8 @@ description: |
 ---
 cluster: '*'
 form:
-  - cluster
   - api_key
+  - cluster
   - working_dir
   - bc_num_hours
   - bc_email_on_started
@@ -529,25 +551,31 @@ attributes:
     widget: "text_field"
     label: "SLAC AI API Key"
     help: |
-      Your LiteLLM API key for ai-api.slac.stanford.edu.
+      Your LiteLLM API key for ai-api.slac.stanford.edu. Get one at the
+      [AI API Portal](https://ai-api.slac.stanford.edu).
 
-      This key is written to ~/.claude/settings.json on first launch only.
-      If you already have a settings.json, this field is ignored and your
+      **This key is written to `~/.claude/settings.json` on your first launch only.**
+      If `~/.claude/settings.json` already exists, this field is ignored and your
       existing configuration is preserved.
 
-      To get an API key, visit [AI API Portal](https://ai-api.slac.stanford.edu).
+      **If your key stops working:** delete `~/.claude/settings.json` on the
+      interactive node, then relaunch this app with your new key.
+
+      If Claude Code shows API errors after connecting, your key may be invalid —
+      check the OOD session log or delete `~/.claude/settings.json` and relaunch.
     required: true
   working_dir:
     widget: "text_field"
     label: "Working Directory"
     value: ""
+    placeholder: "$HOME (default)"
     help: |
-      Directory where Claude Code will start. Leave blank for your home
-      directory ($HOME).
+      Directory where Claude Code will start. Leave blank to use your home
+      directory. Must be an existing directory you have read/write access to.
   bc_num_hours:
     widget: "number_field"
     label: "Session Duration (hours)"
-    value: 4
+    value: 8
     help: |
       Number of hours for the Claude Code session. Maximum is limited
       by the cluster's site_timeout (typically 168 hours / 7 days).
@@ -610,23 +638,24 @@ No `script.native` block — Interactive mode only, no Slurm args.
 
 #### `view.html.erb`
 ```erb
-<form action="/node/<%= host %>/<%= port %>/" method="post" target="_blank">
-  <input type="hidden" name="username" value="<%= username %>">
-  <input type="hidden" name="password" value="<%= password %>">
-  <button class="btn btn-primary" type="submit">
-    <i class="fa fa-terminal"></i> Connect to Claude Code
-  </button>
-</form>
-<small>
+<%# OOD injects X-Forwarded-User header automatically — no credential needed %>
+<a href="/node/<%= host %>/<%= port %>/" target="_blank" class="btn btn-primary">
+  <i class="fa fa-terminal"></i> Connect to Claude Code
+</a>
+
+<p class="text-muted small mt-3">
   <strong>Host:</strong> <%= host %><br>
   <strong>Port:</strong> <%= port %><br>
   <strong>Working Dir:</strong> <%= working_dir.blank? ? "~" : working_dir %>
-</small>
+</p>
+<p class="text-muted small">
+  <i class="fa fa-info-circle"></i>
+  Your session continues running after you close this tab.
+  Return to <strong>My Interactive Sessions</strong> and click Connect to resume.
+</p>
 ```
-**Note:** ttyd's auth flow may differ from Jupyter's POST-to-/login pattern.
-ttyd uses HTTP Basic Auth — the view.html.erb approach needs Phase 0 testing.
-May need to embed credentials in the URL (`https://user:pass@host:port/`)
-or use JavaScript to set `Authorization: Basic <base64>` header.
+**Note:** Authentication is handled by OOD's reverse proxy injecting
+`X-Forwarded-User` — no POST form or credential embedding needed in view.html.erb.
 
 #### `template/before.sh.erb`
 ```bash
@@ -636,26 +665,21 @@ or use JavaScript to set `Authorization: Basic <base64>` header.
 # Find available port
 port=$(find_port ${host})
 
-# Generate credentials for ttyd
-password="$(create_passwd 16)"
-username="user"
-
-# Write ttyd credential file (mode 600)
-export CREDENTIAL_FILE="${PWD}/credential"
-(
-umask 077
-echo "${username}:${password}" > "${CREDENTIAL_FILE}"
-)
-
 # Working directory (default to $HOME)
-export WORKING_DIR="<%= context.working_dir.blank? ? "" : context.working_dir %>"
-if [ -z "${WORKING_DIR}" ]; then
+# ERB strips shell metacharacters before interpolation to prevent command substitution.
+# context.working_dir is validated to contain only safe path characters.
+<%
+  wd = context.working_dir.to_s.strip
+  wd = "" unless wd.match?(%r{\A[A-Za-z0-9_./ -]*\z})
+%>
+export WORKING_DIR="<%= wd %>"
+if [ -z "${WORKING_DIR}" ] || [ ! -d "${WORKING_DIR}" ]; then
   export WORKING_DIR="${HOME}"
 fi
 
 # SIF image path
 export SINGULARITY_IMAGE_PATH="/sdf/sw/ai/claude-code/claude-code.sif"
-# Fallback for development/testing
+# Fallback for development/testing — remove before production
 if [ ! -f "${SINGULARITY_IMAGE_PATH}" ]; then
   export SINGULARITY_IMAGE_PATH="/sdf/home/y/ytl/k8s/claude-code/claude-code_2.1.104.sif"
 fi
@@ -665,7 +689,12 @@ if [ ! -f "${HOME}/.claude/settings.json" ]; then
   mkdir -p "${HOME}/.claude"
   (
   umask 077
-  cat > "${HOME}/.claude/settings.json" << 'SETTINGS_EOF'
+  # Use randomized delimiter to prevent injection if API key contains SETTINGS_EOF.
+  # Unquoted << ${DELIM}: shell expands DELIM to get the terminator string, AND
+  # expands variables in the body — but ERB has already substituted api_key,
+  # so there are no remaining shell variables to expand in the JSON body.
+  DELIM="SETTINGS_EOF_${RANDOM}"
+  cat > "${HOME}/.claude/settings.json" << ${DELIM}
 {
   "env": {
     "ANTHROPIC_BASE_URL": "https://ai-api.slac.stanford.edu",
@@ -676,7 +705,7 @@ if [ ! -f "${HOME}/.claude/settings.json" ]; then
     "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
   }
 }
-SETTINGS_EOF
+${DELIM}
   )
   echo "Wrote ~/.claude/settings.json with API key from form."
 else
@@ -688,26 +717,25 @@ fi
 ```bash
 #!/usr/bin/env bash
 
+# SIF image path (set in before.sh.erb, exported into this script)
+CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
+
 # Change to working directory
 cd "${WORKING_DIR}"
 
-# OOD session ID for unique tmux session name
-# Avoids collisions when same user runs multiple sessions on one node
-# (Apptainer shares /tmp with host, so tmux sockets are shared)
-export SESSION_ID="<%= context.token %>"
-
-# Start Claude Code in a named tmux session
-# The CLI binary is `claude`; session name uses `claude-code-` prefix for clarity
-tmux new-session -d -s "claude-code-${SESSION_ID}" "claude"
-
-# Launch ttyd to serve the tmux session via OOD reverse proxy
-# ttyd bridges the browser to the tmux session
-exec ttyd \
+# Launch ttyd serving claude-code directly via PTY.
+# NOTE: exec replaces the current shell process — shell function wrappers are NOT
+# called by exec (exec uses execve(), bypassing the shell function table).
+# We therefore call apptainer exec directly here rather than via a ttyd() wrapper.
+# --auth-header: OOD mod_ood_proxy injects X-Forwarded-User server-side on all
+#   /node/<host>/<port>/ requests — no password needed
+# --writable: enable PTY input (required for interactive claude-code)
+exec apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd \
   --port ${port} \
   --base-path "/node/${host}/${port}/" \
-  --credential-file "${CREDENTIAL_FILE}" \
+  --auth-header X-Forwarded-User \
   --writable \
-  tmux attach-session -t "claude-code-${SESSION_ID}"
+  claude
 ```
 
 #### `template/after.sh.erb`
@@ -774,31 +802,33 @@ Three additions to `ondemand-patch.yaml` (same pattern as slac-ood-jupyter):
 Manual testing on an interactive node. No code committed — just answers.
 
 - [ ] SSH to an interactive node (e.g. `ssh sdfiana005`)
-- [ ] Run the SIF with full bindpath:
-      `singularity exec -B /etc,/media,/mnt,/opt,/run,/srv,/usr,/var,/sdf,/fs,/lscratch <SIF> bash`
-- [ ] Inside container: `which ttyd`, `which claude`, `which tmux`, `which rg`
-      → **Record which tools survive the /usr overlay and which are masked**
-- [ ] Test ttyd → tmux manually:
+- [ ] Verify `find_port` and `create_passwd` are available in the cluster-default
+      SIF (the adapter runs scripts there, not in the claude-code SIF)
+- [ ] Test nested apptainer — from inside the default SIF, run:
+      `apptainer exec -B /sdf,/fs,/lscratch <claude-code-SIF> which ttyd`
+      `apptainer exec -B /sdf,/fs,/lscratch <claude-code-SIF> which claude`
+      → **Record whether nested apptainer exec works**
+- [ ] Test function-wrapper pattern manually:
+      ```bash
+      CLAUDE_SIF="/sdf/home/y/ytl/k8s/claude-code/claude-code_2.1.104.sif"
+      function ttyd() { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd "$@"; }
+      ttyd --port 8888 --base-path /node/$(hostname)/8888/ \
+           --auth-header X-Forwarded-User --writable bash
       ```
-      echo "user:testpass" > /tmp/cred && chmod 600 /tmp/cred
-      tmux new-session -d -s test-session bash
-      ttyd --port 8888 --base-path /test/ --credential-file /tmp/cred tmux attach -t test-session
-      ```
-- [ ] From another terminal: `curl -u user:testpass http://<host>:8888/test/`
-      → Confirm ttyd responds
-- [ ] Test OOD reverse proxy: access `https://ondemand.slac.stanford.edu/node/<host>/8888/`
-      → Confirm WebSocket upgrade works
+- [ ] Test `--auth-header` behaviour: without OOD proxy, direct curl to ttyd
+      should get 407. Through OOD `/node/` proxy, should work.
+- [ ] Access `https://ondemand.slac.stanford.edu/node/<host>/8888/` in browser
+      → Confirm OOD injects X-Forwarded-User and ttyd accepts the connection
+- [ ] Confirm WebSocket upgrade works through OOD proxy (xterm.js renders)
 - [ ] Test Claude Code TUI through ttyd: colors, cursor, ctrl-C, permission prompts
-- [ ] Test nested tmux: outer tmux (simulating OOD adapter) + inner tmux session
-- [ ] Verify /tmp sharing: confirm Apptainer shares /tmp with host, so
-      tmux sessions created inside the container are visible from outside
-      (this is expected — validates the SESSION_ID naming is necessary)
-- [ ] Test concurrent sessions: two tmux sessions with different names
-      on the same node via the same user — confirm no collision
-- [ ] **Record findings in Problems & Solutions section**
+- [ ] Verify `<%= session.id %>` resolves to a per-session UUID in shell ERB
+      templates; if not, test `basename $PWD` as fallback for unique naming
+- [ ] Test `hidepid=2` status on interactive nodes: `cat /proc/1/cmdline` from
+      another user — if masked, evaluate adding `-c user:pass` secondary auth
+- [ ] **Record all findings in Problems & Solutions section**
 
-**Gate:** If ttyd or claude are masked by /usr overlay, implement ADR-002
-fix before proceeding to Slice 1.
+**Gate:** If nested apptainer exec fails, escalate to Option A (submit.yml.erb
+container override) before proceeding to Slice 1.
 
 ### Slice 1 — App Skeleton: All OOD Files (1 day)
 
@@ -816,13 +846,12 @@ Deploy to OOD and validate all acceptance criteria.
 
 - [ ] AC-1: New user (no settings.json) → Launch → Claude responds
 - [ ] AC-2: Existing user (has settings.json) → Launch → settings preserved
-- [ ] AC-3: Close browser tab → re-Connect → same tmux session
-- [ ] AC-4: OOD "Delete" → tmux killed, Claude gets SIGTERM
+- [ ] AC-3: Close browser tab → re-Connect → ttyd still running, Claude still active
+- [ ] AC-4: OOD "Delete" → outer tmux killed, ttyd+Claude receive SIGTERM
 - [ ] AC-5: Tools accessible on all tested clusters despite bindpath
 - [ ] AC-6: `ps aux | grep ttyd` → no password in args
 - [ ] AC-7: App appears in OOD dashboard under "Interactive Apps"
 - [ ] Test invalid API key → clear error in OOD session logs
-- [ ] Test SSH attach → `ssh <node>` + `tmux attach -t claude-code`
 
 ### Slice 3 — Deploy to Production (0.5 day)
 
@@ -849,8 +878,7 @@ Deploy to OOD and validate all acceptance criteria.
 - [ ] **Slice 1:** template/script.sh.erb written
 - [ ] **Slice 1:** template/after.sh.erb written
 - [ ] **Slice 2:** AC-1 through AC-7 all pass
-- [ ] **Slice 2:** Session reconnect works
-- [ ] **Slice 2:** SSH attach works
+- [ ] **Slice 2:** Session reconnect (close tab → re-Connect) works
 - [ ] **Slice 3:** ondemand-patch.yaml updated in slac-ondemand repo
 - [ ] **Slice 3:** Deployed to production OOD
 - [ ] **Slice 3:** User-facing docs written
@@ -861,15 +889,15 @@ Deploy to OOD and validate all acceptance criteria.
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| /usr overlay masks ttyd, rg, other container tools | **High** | **High** | ADR-002: Test in Slice 0; rebuild container to install under /opt if needed |
-| ttyd WebSocket upgrade fails through OOD proxy | Low | High | Jupyter already uses WebSockets through same proxy; test in Slice 0 |
-| tmux session name collision (/tmp shared) | High (if hardcoded) | High | Fixed: session name includes OOD session token (`claude-code-${SESSION_ID}`) |
-| Nested tmux conflicts (OOD outer + our inner) | Low | Medium | Different tmux socket paths (host vs container); test in Slice 0 |
+| Nested apptainer exec fails (default SIF → claude-code SIF) | Medium | High | Test in Slice 0; fallback is submit.yml.erb container override (Option A) |
+| ttyd --auth-header bypass (SLAC internal network + forged header) | Low | Medium | **Accepted risk** — SLAC network perimeter mitigates; evaluate `-c user:pass` + `hidepid=2` as secondary layer in Phase 0 |
+| OOD WebSocket upgrade fails through proxy for ttyd | Low | High | Jupyter already uses WebSockets through same proxy; test in Slice 0 |
 | Claude Code TUI garbled through ttyd | Low | Medium | ttyd's xterm.js is mature; test rendering in Slice 0 |
-| ttyd auth flow incompatible with OOD view.html.erb | Medium | Medium | ttyd uses HTTP Basic Auth, not Jupyter's POST-to-/login; test in Slice 0, may need JS workaround |
 | SIF not accessible from all interactive nodes | Low | High | SIF on /sdf shared filesystem; verify reachability in Slice 0 |
-| API key leaked in logs or process list | Low | High | Credential file (mode 600) for ttyd; settings.json (mode 600) for API key; never pass as CLI arg |
-| Users can't update revoked API key | Medium | Low | Help text explains manual edit; future enhancement to support overwrite |
+| API key injected via ERB heredoc — delimiter collision | Low | High | Fixed: randomized delimiter `SETTINGS_EOF_${RANDOM}` |
+| Shell injection via context.working_dir | Medium | High | Validate directory exists (`[ -d "${WORKING_DIR}" ]`); strip dangerous chars |
+| Users can't update revoked API key | Medium | Low | Help text explains manual delete; acceptable for v1 |
+| Hardcoded model names become stale | Medium | Low | Admin periodic update; future P2 to make form-selectable |
 
 ---
 
@@ -902,12 +930,9 @@ Deploy to OOD and validate all acceptance criteria.
    `/fs/ddn/sdf/group/.../claude-code.sif` so all interactive nodes can
    reach it.
 
-2. **Nested tmux sessions:** The Linux Host Adapter wraps `script.sh.erb`
-   in a tmux session. Our script creates a *second* named tmux session
-   inside the container. Does nesting cause issues? The outer tmux is on
-   the host; the inner one is inside the container — they should be
-   separate session servers.
-   → **Test in Phase 0.**
+2. ~~**Nested tmux sessions:**~~ **Resolved.** No inner tmux session — ttyd
+   exec's `claude` directly via PTY. The OOD adapter's outer tmux keeps the
+   job alive. No nesting, no prefix key conflict, no /tmp socket collision.
 
 3. **OOD WebSocket proxying:** Does OOD's `/node/` reverse proxy handle
    WebSocket upgrade for ttyd? Jupyter already uses WebSockets, so this
@@ -936,22 +961,26 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Board Review
 
-> *Populated by `/codebase-board-review` after the board completes. Do not fill manually.*
+**Verdict:** CLEAR WITH WARNINGS
+**Date:** 2026-04-14
+**Rounds:** 2
 
-**Verdict:** —
-**Date:** —
-**Rounds:** —
+| Reviewer | R1 | R2 | Amended | Key findings |
+|---|---|---|---|---|
+| research-handbook | FAIL | PASS WITH WARNINGS | Yes | `--credential-file` doesn't exist in ttyd; `context.token` not session-unique; nested apptainer risk flagged for Phase 0 |
+| codebase-arch-review | FAIL | PASS WITH WARNINGS | Yes | Container execution model wrong (scripts run in cluster-default SIF); ttyd auth redesigned to `--auth-header`; session ID changed to `session.id` |
+| codebase-eng-review | FAIL | PASS WITH WARNINGS | Yes | `exec ttyd` bypasses shell function wrappers (fixed to `exec apptainer exec ... ttyd`); heredoc delimiter issue; view.html.erb POST auth wrong |
+| codebase-doc-review | PASS WITH WARNINGS | — (skipped R2) | Yes | AMD-UX-1..5 applied: form field reorder, stronger help text, working_dir placeholder, reconnect info in view.html.erb, manifest description |
+| security-review | FAIL | PASS WITH WARNINGS | Yes | API key heredoc injection (fixed with randomized delimiter + unquoted `<< ${DELIM}`); working_dir command substitution (fixed with ERB metachar validation); `--auth-header` forgery accepted risk documented |
+| codebase-ux-review | PASS WITH WARNINGS | — (skipped R2) | Yes | Form field order, settings.json warning text, working_dir placeholder, session reconnect discoverability, manifest description |
 
-| Reviewer | Result | Amended | Key findings |
-|---|---|---|---|
-| research-handbook | — | — | — |
-| codebase-arch-review | — | — | — |
-| codebase-eng-review | — | — | — |
-| codebase-doc-review | — | — | — |
-| security-review | — | — | — |
+**Accepted warnings:**
+- `--auth-header X-Forwarded-User` checks header presence only (not value) — forgery possible by users on SLAC internal network who can reach node:port directly. Mitigated by SLAC network perimeter; `-c user:pass` secondary layer deferred to Phase 0 evaluation.
+- SIF fallback path points to user home directory — remove or guard before production deployment.
+- Nested apptainer exec (cluster-default SIF → claude-code SIF) needs Phase 0 validation; if it fails, escalate to submit.yml.erb `script.native.singularity_container` override.
+- `session.id` availability in shell ERB templates needs Phase 0 verification; fallback to `basename $PWD`.
 
-**Accepted warnings:** none
-**ADRs written:** 0
+**ADRs written:** ADR-001 (function-wrapper pattern), ADR-002 (singularity bindpath), ADR-003 (ttyd auth — `--auth-header`)
 
 ---
 

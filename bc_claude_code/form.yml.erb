@@ -31,7 +31,15 @@ attributes:
     help: |
       Version of Claude Code to run. "latest" is recommended for most users.
       Older versions are available if you need to pin to a specific release.
-    options: []
+    options:
+      <%
+        sifs = Dir.glob("/sdf/home/y/ytl/k8s/claude-code/claude-code_*.sif").sort.reverse
+        sifs.each_with_index do |path, i|
+          version = File.basename(path, '.sif').sub('claude-code_', '')
+          label = i == 0 ? "#{version} (latest)" : version
+      %>
+      - ["<%= label %>", "<%= path %>"]
+      <% end %>
   working_dir:
     widget: "text_field"
     label: "Working Directory"

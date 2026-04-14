@@ -2,8 +2,9 @@
 
 | # | Title | Priority | Status | Branch | PR |
 |---|-------|----------|--------|--------|----|
+| [001](todo/001-ood-claude-code-app.md) | Open OnDemand Interactive App for Claude Code | 🟡 P2 | 📋 Preparing | — | — |
 
-**Summary:** 0 tasks
+**Summary:** 0 done · 0 in progress · 1 preparing
 
 ## Priority Key
 - P0 Critical — blocking, do immediately

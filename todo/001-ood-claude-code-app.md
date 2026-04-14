@@ -357,10 +357,16 @@ FR-3: before.sh.erb finds a free port, validates the working directory,
       key and SLAC LiteLLM proxy URL. Uses a randomized heredoc delimiter
       to prevent injection if the API key contains the delimiter string.
 
-FR-4: script.sh.erb calls `exec apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd`
-      directly — no shell function wrappers (exec bypasses them). ttyd is
-      launched with --auth-header X-Forwarded-User and serves claude directly
-      via OOD's reverse proxy.
+FR-4: script.sh.erb defines `ttyd()` and `claude()` shell function wrappers
+      invoking `apptainer exec -B /sdf,/fs,/lscratch $SIF <cmd>` (the
+      slac-ood-jupyter pattern). ttyd() is called directly (not via exec)
+      so the wrapper is invoked. ttyd then runs claude as its subprocess
+      inside the same SIF, where claude is on PATH naturally.
+
+FR-4a: form.yml.erb includes a `sif_version` dropdown populated at render
+       time by form.js via ERB glob of /sdf/sw/ai/claude-code/claude-code_*.sif,
+       sorted newest-first. The selected SIF path is passed to before.sh.erb
+       as context.sif_version and exported as SINGULARITY_IMAGE_PATH.
 
 FR-5: after.sh.erb calls wait_until_port_used to signal OOD readiness.
 
@@ -490,18 +496,17 @@ Decision: --auth-header X-Forwarded-User. OOD's mod_ood_proxy injects this
          server-side on all /node/<host>/<port>/ requests. Accepted risk noted.
 ```
 
-### Choice: Direct ttyd → claude (vs. named inner tmux session)
+### Choice: Function-wrapper pattern with SIF version dropdown (vs. hardcoded single SIF)
 ```
-+ No nested tmux — avoids double-tmux complexity and /tmp socket collisions
-+ Simpler script: single apptainer exec invocation
-+ No prefix key conflicts between OOD outer tmux and inner tmux
-- Session does NOT survive ttyd process death (no re-attach via SSH)
-- Close browser tab → ttyd remains running but claude subprocess holds PTY;
-  "Connect" again reconnects to the same ttyd (job stays alive via OOD adapter
-  outer tmux)
-Decision: Direct ttyd → claude. The OOD adapter's outer tmux already keeps the
-         job alive. Inner tmux adds complexity with no benefit for browser-only
-         users. SSH re-attachability is a P3 nice-to-have.
++ Users can pin to older Claude Code releases via dropdown
++ Admin adds new SIFs to /sdf/sw/ai/claude-code/ — form auto-discovers them
++ Mirrors slac-ood-jupyter pattern — familiar to OOD maintainers
++ No exec bypass issue — ttyd() wrapper called directly, not via exec
+- Requires nested apptainer exec (cluster-default SIF → claude-code SIF)
+  Phase 0 must verify this works on S3DF nodes
+Decision: Function-wrapper + version dropdown. The slac-ood-jupyter pattern
+         is proven. Version pinning is an explicit user requirement.
+         Phase 0 gates on nested apptainer validation.
 ```
 
 ---
@@ -543,6 +548,7 @@ cluster: '*'
 form:
   - api_key
   - cluster
+  - sif_version
   - working_dir
   - bc_num_hours
   - bc_email_on_started
@@ -564,6 +570,13 @@ attributes:
       If Claude Code shows API errors after connecting, your key may be invalid —
       check the OOD session log or delete `~/.claude/settings.json` and relaunch.
     required: true
+  sif_version:
+    widget: "select"
+    label: "Claude Code Version"
+    help: |
+      Version of Claude Code to run. "latest" is recommended for most users.
+      Older versions are available if you need to pin to a specific release.
+    options: []  # populated dynamically by form.js from /sdf/sw/ai/claude-code/
   working_dir:
     widget: "text_field"
     label: "Working Directory"
@@ -621,11 +634,41 @@ function mask_api_key() {
   let input = $('#batch_connect_session_context_api_key');
   input.attr('type', 'password');
   input.attr('autocomplete', 'off');
+  input.attr('data-lpignore', 'true');
+  input.attr('data-1p-ignore', 'true');
+}
+
+// Populate SIF version dropdown from available SIF files.
+// SIF files are named claude-code_<version>.sif under /sdf/sw/ai/claude-code/.
+// The list is embedded at render time via ERB so no client-side filesystem access needed.
+function populate_sif_versions() {
+  let select = $('#batch_connect_session_context_sif_version');
+  select.empty();
+  let sifs = <%= Dir.glob("/sdf/sw/ai/claude-code/claude-code_*.sif")
+                   .map { |f| File.basename(f, '.sif') }
+                   .sort
+                   .reverse
+                   .to_json %>;
+  if (sifs.length === 0) {
+    // Fallback: no SIFs found at the standard path
+    select.append($('<option>', { value: 'latest', text: 'latest (default)' }));
+    return;
+  }
+  sifs.forEach(function(name, i) {
+    let version = name.replace('claude-code_', '');
+    let label = (i === 0) ? version + ' (latest)' : version;
+    select.append($('<option>', {
+      value: '/sdf/sw/ai/claude-code/' + name + '.sif',
+      text: label,
+      selected: i === 0
+    }));
+  });
 }
 
 // Main
 filter_interactive_clusters();
 mask_api_key();
+populate_sif_versions();
 ```
 
 #### `submit.yml.erb`
@@ -677,11 +720,12 @@ if [ -z "${WORKING_DIR}" ] || [ ! -d "${WORKING_DIR}" ]; then
   export WORKING_DIR="${HOME}"
 fi
 
-# SIF image path
-export SINGULARITY_IMAGE_PATH="/sdf/sw/ai/claude-code/claude-code.sif"
-# Fallback for development/testing — remove before production
+# SIF image path — selected by user from version dropdown
+# context.sif_version is the full path set by form.js (e.g. /sdf/sw/ai/claude-code/claude-code_2.1.104.sif)
+export SINGULARITY_IMAGE_PATH="<%= context.sif_version %>"
 if [ ! -f "${SINGULARITY_IMAGE_PATH}" ]; then
-  export SINGULARITY_IMAGE_PATH="/sdf/home/y/ytl/k8s/claude-code/claude-code_2.1.104.sif"
+  echo "ERROR: SIF not found at ${SINGULARITY_IMAGE_PATH}" >&2
+  clean_up 1
 fi
 
 # Write ~/.claude/settings.json if it does not exist
@@ -720,17 +764,24 @@ fi
 # SIF image path (set in before.sh.erb, exported into this script)
 CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
 
+# Function wrappers — invoke claude-code SIF tools from within the
+# cluster-default container (slac-ood-jupyter pattern).
+# Required so that users can select different SIF versions via the form dropdown.
+# Explicit -B bindpath avoids /usr overlay masking container binaries.
+function ttyd()  { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd  "$@"; }
+function claude(){ apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" claude "$@"; }
+export -f ttyd claude
+
 # Change to working directory
 cd "${WORKING_DIR}"
 
 # Launch ttyd serving claude-code directly via PTY.
-# NOTE: exec replaces the current shell process — shell function wrappers are NOT
-# called by exec (exec uses execve(), bypassing the shell function table).
-# We therefore call apptainer exec directly here rather than via a ttyd() wrapper.
+# ttyd() wrapper invokes apptainer exec $SIF ttyd — ttyd then runs claude as its
+# subprocess *inside the same SIF*, so claude is on PATH naturally.
 # --auth-header: OOD mod_ood_proxy injects X-Forwarded-User server-side on all
 #   /node/<host>/<port>/ requests — no password needed
 # --writable: enable PTY input (required for interactive claude-code)
-exec apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd \
+ttyd \
   --port ${port} \
   --base-path "/node/${host}/${port}/" \
   --auth-header X-Forwarded-User \

@@ -1,0 +1,15 @@
+<%# OOD injects X-Forwarded-User header automatically — no credential needed %>
+<a href="/node/<%= host %>/<%= port %>/" target="_blank" class="btn btn-primary">
+  <i class="fa fa-terminal"></i> Connect to Claude Code
+</a>
+
+<p class="text-muted small mt-3">
+  <strong>Host:</strong> <%= host %><br>
+  <strong>Port:</strong> <%= port %><br>
+  <strong>Working Dir:</strong> <%= working_dir.blank? ? "~" : working_dir %>
+</p>
+<p class="text-muted small">
+  <i class="fa fa-info-circle"></i>
+  Your session continues running after you close this tab.
+  Return to <strong>My Interactive Sessions</strong> and click Connect to resume.
+</p>

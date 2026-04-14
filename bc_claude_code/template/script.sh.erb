@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+# SIF image path (set in before.sh.erb, exported into this script)
+CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
+
+# Function wrappers — invoke claude-code SIF tools from within the
+# cluster-default container (slac-ood-jupyter pattern).
+# Required so that users can select different SIF versions via the form dropdown.
+# Explicit -B bindpath avoids /usr overlay masking container binaries.
+function ttyd()  { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd  "$@"; }
+function claude(){ apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" claude "$@"; }
+export -f ttyd claude
+
+# Change to working directory
+cd "${WORKING_DIR}"
+
+# Launch ttyd serving claude-code directly via PTY.
+# ttyd() wrapper invokes apptainer exec $SIF ttyd — ttyd then runs claude as its
+# subprocess *inside the same SIF*, so claude is on PATH naturally.
+# --auth-header: OOD mod_ood_proxy injects X-Forwarded-User server-side on all
+#   /node/<host>/<port>/ requests — no password needed
+# --writable: enable PTY input (required for interactive claude-code)
+# --check-origin: block WebSocket connections from unexpected origins (defence-in-depth)
+ttyd \
+  --port ${port} \
+  --base-path "/node/${host}/${port}/" \
+  --auth-header X-Forwarded-User \
+  --check-origin \
+  --writable \
+  claude

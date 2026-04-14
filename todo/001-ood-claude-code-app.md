@@ -1,8 +1,8 @@
 # 001 — Open OnDemand Interactive App for Claude Code
 
 > **Priority:** 🟡 P2 — Medium
-> **Status:** 🔍 Reviewed
-> **Branch:** —
+> **Status:** 🔄 In Progress
+> **Branch:** `feat/ood-claude-code-app`
 > **PR:** —
 > **Created:** 2026-04-09
 > **Shipped:** —
@@ -920,14 +920,14 @@ Deploy to OOD and validate all acceptance criteria.
 
 - [ ] **Slice 0:** Spike — /usr overlay tested, findings recorded
 - [ ] **Slice 0:** ADR-002 resolved (if tools were masked)
-- [ ] **Slice 1:** manifest.yml written
-- [ ] **Slice 1:** form.yml.erb written
-- [ ] **Slice 1:** form.js written
-- [ ] **Slice 1:** submit.yml.erb written
-- [ ] **Slice 1:** view.html.erb written
-- [ ] **Slice 1:** template/before.sh.erb written
-- [ ] **Slice 1:** template/script.sh.erb written
-- [ ] **Slice 1:** template/after.sh.erb written
+- [x] **Slice 1:** manifest.yml written
+- [x] **Slice 1:** form.yml.erb written
+- [x] **Slice 1:** form.js written
+- [x] **Slice 1:** submit.yml.erb written
+- [x] **Slice 1:** view.html.erb written
+- [x] **Slice 1:** template/before.sh.erb written
+- [x] **Slice 1:** template/script.sh.erb written
+- [x] **Slice 1:** template/after.sh.erb written
 - [ ] **Slice 2:** AC-1 through AC-7 all pass
 - [ ] **Slice 2:** Session reconnect (close tab → re-Connect) works
 - [ ] **Slice 3:** ondemand-patch.yaml updated in slac-ondemand repo

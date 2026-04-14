@@ -1,0 +1,53 @@
+# Export module function if available
+[[ $(type -t module) == "function" ]] && export -f module
+
+# Find available port
+port=$(find_port ${host})
+
+# Working directory (default to $HOME)
+# ERB strips shell metacharacters before interpolation to prevent command substitution.
+# context.working_dir is validated to contain only safe path characters.
+<%
+  wd = context.working_dir.to_s.strip
+  wd = "" unless wd.match?(%r{\A[A-Za-z0-9_./ -]*\z})
+%>
+export WORKING_DIR="<%= wd %>"
+if [ -z "${WORKING_DIR}" ] || [ ! -d "${WORKING_DIR}" ]; then
+  export WORKING_DIR="${HOME}"
+fi
+
+# SIF image path — selected by user from version dropdown
+# context.sif_version is the full path set by form.js (e.g. /sdf/sw/ai/claude-code/claude-code_2.1.104.sif)
+export SINGULARITY_IMAGE_PATH="<%= context.sif_version %>"
+if [ ! -f "${SINGULARITY_IMAGE_PATH}" ]; then
+  echo "ERROR: SIF not found at ${SINGULARITY_IMAGE_PATH}" >&2
+  clean_up 1
+fi
+
+# Write ~/.claude/settings.json if it does not exist
+if [ ! -f "${HOME}/.claude/settings.json" ]; then
+  mkdir -p "${HOME}/.claude"
+  (
+  umask 077
+  # Use randomized delimiter to prevent injection if API key contains SETTINGS_EOF.
+  # Unquoted << ${DELIM}: shell expands DELIM to get the terminator string, AND
+  # expands variables in the body — but ERB has already substituted api_key,
+  # so there are no remaining shell variables to expand in the JSON body.
+  DELIM="SETTINGS_EOF_${RANDOM}"
+  cat > "${HOME}/.claude/settings.json" << ${DELIM}
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://ai-api.slac.stanford.edu",
+    "ANTHROPIC_AUTH_TOKEN": "<%= context.api_key %>",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "us.anthropic.claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "us.anthropic.claude-opus-4-6-v1",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
+  }
+}
+${DELIM}
+  )
+  echo "Wrote ~/.claude/settings.json with API key from form."
+else
+  echo "~/.claude/settings.json already exists — preserving existing config."
+fi

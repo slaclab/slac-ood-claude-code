@@ -1,0 +1,52 @@
+---
+cluster: '*'
+form:
+  - api_key
+  - cluster
+  - sif_version
+  - working_dir
+  - bc_num_hours
+  - bc_email_on_started
+attributes:
+  api_key:
+    widget: "text_field"
+    label: "SLAC AI API Key"
+    help: |
+      Your LiteLLM API key for ai-api.slac.stanford.edu. Get one at the
+      [AI API Portal](https://ai-api.slac.stanford.edu).
+
+      **This key is written to `~/.claude/settings.json` on your first launch only.**
+      If `~/.claude/settings.json` already exists, this field is ignored and your
+      existing configuration is preserved.
+
+      **If your key stops working:** delete `~/.claude/settings.json` on the
+      interactive node, then relaunch this app with your new key.
+
+      If Claude Code shows API errors after connecting, your key may be invalid —
+      check the OOD session log or delete `~/.claude/settings.json` and relaunch.
+    required: true
+  sif_version:
+    widget: "select"
+    label: "Claude Code Version"
+    help: |
+      Version of Claude Code to run. "latest" is recommended for most users.
+      Older versions are available if you need to pin to a specific release.
+    options: []
+  working_dir:
+    widget: "text_field"
+    label: "Working Directory"
+    value: ""
+    placeholder: "$HOME (default)"
+    help: |
+      Directory where Claude Code will start. Leave blank to use your home
+      directory. Must be an existing directory you have read/write access to.
+  bc_num_hours:
+    widget: "number_field"
+    label: "Session Duration (hours)"
+    value: 8
+    help: |
+      Number of hours for the Claude Code session. Maximum is limited
+      by the cluster's site_timeout (typically 168 hours / 7 days).
+    min: 1
+    max: 168
+    step: 1

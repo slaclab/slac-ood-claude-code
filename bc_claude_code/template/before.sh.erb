@@ -50,6 +50,7 @@ if [ ! -f "${HOME}/.claude/settings.json" ] || [ "${SHOULD_OVERWRITE}" = "yes" ]
 }
 ${DELIM}
   )
+  chmod go-rwx "${HOME}/.claude/settings.json"
   if [ "${SHOULD_OVERWRITE}" = "yes" ]; then
     echo "Overwrote ~/.claude/settings.json with API key from form."
   else

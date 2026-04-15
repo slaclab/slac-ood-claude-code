@@ -1,11 +1,11 @@
 # TODO #002 — Patch ttyd to support password file auth
 
 > **Priority:** 🔵 P3 — Low
-> **Status:** 🏁 Implementation Done
+> **Status:** ✅ Merged
 > **Branch:** —
 > **PR:** —
 > **Created:** 2026-04-15
-> **Shipped:** —
+> **Shipped:** 2026-04-15
 
 ---
 

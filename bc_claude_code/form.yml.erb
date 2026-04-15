@@ -1,0 +1,61 @@
+---
+cluster: '*'
+form:
+  - api_key
+  - cluster
+  - sif_version
+  - working_dir
+  - bc_num_hours
+  - bc_email_on_started
+  - overwrite_settings
+attributes:
+  api_key:
+    widget: "text_field"
+    label: "SLAC AI API Key"
+    help: |
+      Request a [SLAC AI API Bedrock Key](https://slacprod.servicenowservices.com/it_services?id=sc_cat_item&sys_id=515f28711b607110c5d320eae54bcb64&sysparm_category=d65827c46fd921009c4235af1e3ee434).
+    required: true
+  overwrite_settings:
+    widget: "check_box"
+    label: "Overwrite existing settings"
+    help: |
+      Overwrites `~/.claude/settings.json` with the API key above. Use after a key rotation or to reset to defaults.
+    value: "0"
+  cluster:
+    label: "Interactive Cluster"
+    help: |
+      The S3DF interactive cluster to run Claude Code on. Available clusters:
+      **iana** (general), **rubin**, **psana**, **suncat**, **supercdms**, **neutrino**, **mli**.
+      Choose the one associated with your experiment or data.
+  sif_version:
+    widget: "select"
+    label: "Claude Code Version"
+    help: |
+      Version of Claude Code to run. Latest is recommended.
+    options:
+      <%
+        sifs = Dir.glob("/sdf/sw/claude-code/claude-code_*.sif")
+          .sort_by { |path| File.basename(path, '.sif').sub('claude-code_', '').split('.').map(&:to_i) }
+          .reverse
+        sifs.each_with_index do |path, i|
+          version = File.basename(path, '.sif').sub('claude-code_', '')
+          label = i == 0 ? "#{version} (latest)" : version
+      %>
+      - ["<%= label %>", "<%= path %>"]
+      <% end %>
+  working_dir:
+    widget: "text_field"
+    label: "Working Directory"
+    value: ""
+    placeholder: "$HOME (default)"
+    help: |
+      Directory where Claude Code will start. Leave blank for your home directory.
+  bc_num_hours:
+    widget: "number_field"
+    label: "Session Duration (hours)"
+    value: 8
+    help: |
+      How long to keep the session alive (max 168 hours).
+    min: 1
+    max: 168
+    step: 1

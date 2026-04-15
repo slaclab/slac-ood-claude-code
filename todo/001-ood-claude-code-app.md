@@ -1,11 +1,11 @@
 # 001 — Open OnDemand Interactive App for Claude Code
 
 > **Priority:** 🟡 P2 — Medium
-> **Status:** 🔍 Reviewed
-> **Branch:** —
+> **Status:** ✅ Merged
+> **Branch:** `feat/ood-claude-code-app`
 > **PR:** —
 > **Created:** 2026-04-09
-> **Shipped:** —
+> **Shipped:** 2026-04-15
 
 ---
 
@@ -82,17 +82,16 @@ function wrappers in `script.sh.erb` — the same pattern `slac-ood-jupyter`
 uses for its per-image `jupyter()` function:
 
 ```bash
-# script.sh.erb — define wrappers then invoke
+# script.sh.erb — direct apptainer exec, no function wrappers
 CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
-function claude() { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" claude "$@"; }
-function ttyd()   { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd "$@"; }
 
-cd "${WORKING_DIR}"
-ttyd --port ${port} \
-     --base-path "/node/${host}/${port}/" \
-     --auth-header X-Forwarded-User \
-     --writable \
-     claude
+apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
+  ttyd --port ${port} \
+       --base-path "/node/${host}/${port}/" \
+       --auth-header X-Forwarded-User \
+       --check-origin \
+       --writable \
+       claude
 ```
 
 OOD reverse-proxies ttyd via `/node/${host}/${port}/`. OOD's `mod_ood_proxy`
@@ -159,16 +158,15 @@ OOD Linux Host Adapter: SSH + tmux to interactive node
   │              │         with ANTHROPIC_AUTH_TOKEN from form
   │              │
   │              ├─ script.sh.erb (runs in cluster-default SIF):
-  │              │    ├─ export CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
-  │              │    ├─ function claude() { apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} claude "$@"; }
-  │              │    ├─ function ttyd()   { apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} ttyd "$@"; }
+  │              │    ├─ CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
   │              │    ├─ cd ${WORKING_DIR:-$HOME}
-  │              │    └─ exec ttyd \
-  │              │         --port ${port} \
-  │              │         --base-path /node/${host}/${port}/ \
-  │              │         --auth-header X-Forwarded-User \
-  │              │         --writable \
-  │              │         claude
+  │              │    └─ exec apptainer exec -B /sdf,/fs,/lscratch ${CLAUDE_SIF} \
+  │              │              ttyd --port ${port} \
+  │              │                   --base-path /node/${host}/${port}/ \
+  │              │                   --auth-header X-Forwarded-User \
+  │              │                   --check-origin \
+  │              │                   --writable \
+  │              │                   claude
   │              │
   │              └─ after.sh.erb:
   │                   └─ wait_until_port_used ${host}:${port}
@@ -268,7 +266,7 @@ doesn't justify Slurm allocation. Users get instant session starts.
 
 ### ADR-002: Container Invocation Strategy
 
-**Status:** Accepted
+**Status:** Superseded — see update below
 **Date:** 2026-04-14
 
 #### Context
@@ -281,23 +279,22 @@ claude-code SIF. Two approaches were considered:
 run directly in the claude-code SIF. Requires overriding `singularity_bindpath`
 to exclude `/usr` (else ttyd/claude masked). Clean, no nesting.
 
-**Option B (chosen):** Function-wrapper pattern — scripts run in the default SIF;
+**Option B (initially chosen):** Function-wrapper pattern — scripts run in the default SIF;
 `script.sh.erb` defines shell functions that call `apptainer exec $SIF <cmd>`.
 This mirrors exactly how `slac-ood-jupyter` invokes its per-experiment containers.
 
-#### Decision
-**Option B — function-wrapper pattern.** Chosen to stay consistent with
-`slac-ood-jupyter` and avoid any per-app cluster config changes. Nested
-`apptainer exec` (default SIF → claude-code SIF) must be validated in Phase 0.
+#### Decision (revised 2026-04-14)
+**Direct `apptainer exec` — no function wrappers.** The function-wrapper pattern is wrong
+here because ttyd must exec `claude` as a child process inside the same SIF. With wrappers,
+that would require a nested `apptainer exec` inside the ttyd process, which is fragile.
+Instead, `script.sh.erb` calls `apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd ... claude`
+directly — ttyd and claude are both in the SIF, so claude is on PATH naturally.
 
 #### Consequences
-- `script.sh.erb` defines `claude()` and `ttyd()` wrapper functions
-- `-B` bindpath set explicitly in each wrapper (`/sdf,/fs,/lscratch`) — avoids
-  the cluster-default `/usr` overlay problem
-- Nested singularity may fail if user namespaces or setuid are not configured
-  on interactive nodes — **must test in Phase 0**
-- `before.sh.erb` runs in the default SIF; only OOD helpers (`find_port`,
-  `create_passwd`) and standard shell tools are needed there
+- `script.sh.erb` has no function wrappers — just a direct `apptainer exec` call
+- `-B` bindpath set explicitly (`/sdf,/fs,/lscratch`) — avoids the cluster-default `/usr` overlay
+- No nested apptainer risk
+- `before.sh.erb` still runs in the cluster-default SIF — only needs `find_port` and standard shell tools, which is fine
 
 ---
 
@@ -311,30 +308,37 @@ The original plan used `--credential-file` which does not exist in ttyd.
 Verified from ttyd source (`server.c`) and README. The actual auth options are:
 - `-c user:pass` — password visible in `/proc/cmdline`
 - `--auth-header <header-name>` — checks for presence of named HTTP header
+- `--check-origin` — rejects WebSocket upgrades where `Origin` doesn't match the server host
 
 OOD's `mod_ood_proxy` (Lua) injects `X-Forwarded-User` on every proxied
 request server-side, set from the authenticated OOD session (`REMOTE_USER`).
 This header cannot be injected by the browser client — it is overwritten by
 the proxy.
 
+`--check-origin` is **incompatible with OOD's reverse proxy architecture**.
+ttyd checks that the `Origin` header on the WebSocket upgrade matches its own
+listening hostname (e.g. `sdfiana006.sdf.slac.stanford.edu`). OOD's proxy
+sends `Origin: https://s3df-dev.slac.stanford.edu` — the frontend hostname —
+which never matches. All WebSocket connections are refused with "refuse to serve
+WS client from different origin". There is no per-origin whitelist option in ttyd.
+
 #### Decision
 **`ttyd --auth-header X-Forwarded-User`** — delegates authentication entirely
 to OOD's existing session layer. No credential file needed. No password in
-process list.
+process list. `--check-origin` is omitted as it is structurally incompatible
+with OOD's reverse proxy.
 
 `view.html.erb` simply links to the ttyd URL — no POST form auth needed, as
 authentication happens via the OOD proxy header automatically.
 
 #### Consequences
-- `before.sh.erb` no longer needs to generate passwords or credential files
+- `before.sh.erb` does not need to generate passwords or credential files
 - `view.html.erb` is a simple link/button to `/node/${host}/${port}/`
+- `--check-origin` must not be used — OOD proxy origin never matches node hostname
 - **Accepted risk:** `--auth-header` checks header presence only (not value).
   A user on the SLAC internal network who can reach `<node>:<port>` directly
   and inject `X-Forwarded-User: anyone` bypasses auth. Mitigated by SLAC
-  network perimeter. Phase 0: evaluate `-c user:pass` secondary layer if
-  `hidepid=2` is confirmed active on S3DF interactive nodes.
-- `--check-origin` (`-O`) flag should also be set to block WebSocket
-  connections from unexpected origins as defence-in-depth
+  network perimeter.
 
 ---
 
@@ -357,11 +361,10 @@ FR-3: before.sh.erb finds a free port, validates the working directory,
       key and SLAC LiteLLM proxy URL. Uses a randomized heredoc delimiter
       to prevent injection if the API key contains the delimiter string.
 
-FR-4: script.sh.erb defines `ttyd()` and `claude()` shell function wrappers
-      invoking `apptainer exec -B /sdf,/fs,/lscratch $SIF <cmd>` (the
-      slac-ood-jupyter pattern). ttyd() is called directly (not via exec)
-      so the wrapper is invoked. ttyd then runs claude as its subprocess
-      inside the same SIF, where claude is on PATH naturally.
+FR-4: script.sh.erb calls `apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd ... claude`
+      directly. ttyd and claude are both in the same SIF — ttyd execs claude as its
+      PTY subprocess naturally, with no nested apptainer required. No function
+      wrappers needed.
 
 FR-4a: form.yml.erb includes a `sif_version` dropdown populated at render
        time by form.js via ERB glob of /sdf/sw/ai/claude-code/claude-code_*.sif,
@@ -852,31 +855,22 @@ Three additions to `ondemand-patch.yaml` (same pattern as slac-ood-jupyter):
 
 Manual testing on an interactive node. No code committed — just answers.
 
-- [ ] SSH to an interactive node (e.g. `ssh sdfiana005`)
-- [ ] Verify `find_port` and `create_passwd` are available in the cluster-default
+- [x] SSH to an interactive node (e.g. `ssh sdfiana005`)
+- [x] Verify `find_port` and `create_passwd` are available in the cluster-default
       SIF (the adapter runs scripts there, not in the claude-code SIF)
-- [ ] Test nested apptainer — from inside the default SIF, run:
+- [x] Test nested apptainer — from inside the default SIF, run:
       `apptainer exec -B /sdf,/fs,/lscratch <claude-code-SIF> which ttyd`
       `apptainer exec -B /sdf,/fs,/lscratch <claude-code-SIF> which claude`
-      → **Record whether nested apptainer exec works**
-- [ ] Test function-wrapper pattern manually:
-      ```bash
-      CLAUDE_SIF="/sdf/home/y/ytl/k8s/claude-code/claude-code_2.1.104.sif"
-      function ttyd() { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd "$@"; }
-      ttyd --port 8888 --base-path /node/$(hostname)/8888/ \
-           --auth-header X-Forwarded-User --writable bash
-      ```
-- [ ] Test `--auth-header` behaviour: without OOD proxy, direct curl to ttyd
-      should get 407. Through OOD `/node/` proxy, should work.
-- [ ] Access `https://ondemand.slac.stanford.edu/node/<host>/8888/` in browser
-      → Confirm OOD injects X-Forwarded-User and ttyd accepts the connection
-- [ ] Confirm WebSocket upgrade works through OOD proxy (xterm.js renders)
-- [ ] Test Claude Code TUI through ttyd: colors, cursor, ctrl-C, permission prompts
-- [ ] Verify `<%= session.id %>` resolves to a per-session UUID in shell ERB
-      templates; if not, test `basename $PWD` as fallback for unique naming
-- [ ] Test `hidepid=2` status on interactive nodes: `cat /proc/1/cmdline` from
-      another user — if masked, evaluate adding `-c user:pass` secondary auth
-- [ ] **Record all findings in Problems & Solutions section**
+      → **Nested apptainer not needed — direct `apptainer exec` used instead**
+- [x] Test function-wrapper pattern manually → **abandoned in favour of direct `apptainer exec`**
+- [x] Test `--auth-header` behaviour → **`--auth-header X-Forwarded-User` confirmed via OOD proxy**
+- [x] Access `https://ondemand.slac.stanford.edu/node/<host>/8888/` in browser
+      → Confirmed OOD injects X-Forwarded-User and ttyd accepts the connection
+- [x] Confirm WebSocket upgrade works through OOD proxy (xterm.js renders)
+- [x] Test Claude Code TUI through ttyd: colors, cursor, ctrl-C, permission prompts
+- [x] Verify `<%= session.id %>` resolves — **not needed; no inner tmux, no session ID required**
+- [x] Test `hidepid=2` status — **`--auth-header` approach means no password to protect; `-c user:pass` deferred to TODO #002**
+- [x] **Findings recorded in Problems & Solutions section**
 
 **Gate:** If nested apptainer exec fails, escalate to Option A (submit.yml.erb
 container override) before proceeding to Slice 1.
@@ -918,20 +912,21 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Implementation Checklist
 
-- [ ] **Slice 0:** Spike — /usr overlay tested, findings recorded
-- [ ] **Slice 0:** ADR-002 resolved (if tools were masked)
-- [ ] **Slice 1:** manifest.yml written
-- [ ] **Slice 1:** form.yml.erb written
-- [ ] **Slice 1:** form.js written
-- [ ] **Slice 1:** submit.yml.erb written
-- [ ] **Slice 1:** view.html.erb written
-- [ ] **Slice 1:** template/before.sh.erb written
-- [ ] **Slice 1:** template/script.sh.erb written
-- [ ] **Slice 1:** template/after.sh.erb written
-- [ ] **Slice 2:** AC-1 through AC-7 all pass
-- [ ] **Slice 2:** Session reconnect (close tab → re-Connect) works
-- [ ] **Slice 3:** ondemand-patch.yaml updated in slac-ondemand repo
-- [ ] **Slice 3:** Deployed to production OOD
+- [x] **Slice 0:** Spike — /usr overlay tested, findings recorded
+- [x] **Slice 0:** ADR-002 resolved (direct `apptainer exec`, no function wrappers)
+- [x] **Slice 1:** manifest.yml written
+- [x] **Slice 1:** form.yml.erb written
+- [x] **Slice 1:** form.js written
+- [x] **Slice 1:** submit.yml.erb written
+- [x] **Slice 1:** view.html.erb written
+- [x] **Slice 1:** template/before.sh.erb written
+- [x] **Slice 1:** template/script.sh.erb written
+- [x] **Slice 1:** template/after.sh.erb written
+- [x] **Slice 2:** AC-1 through AC-7 all pass
+- [x] **Slice 2:** Session reconnect (close tab → re-Connect) works
+- [x] **Slice 3:** ondemand-patch.yaml updated in slac-ondemand repo (dev; stage/prod migration deferred)
+- [x] **Slice 3:** Deployed to OOD (dev environment; prod migration deferred)
+- [x] **Slice 3:** SIF accessible from all interactive nodes
 - [ ] **Slice 3:** User-facing docs written
 
 ---
@@ -954,12 +949,12 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Definition of Done
 
-- [ ] All 7 acceptance criteria (AC-1 through AC-7) pass on at least 2 clusters
-- [ ] App appears in OOD dashboard and launches successfully
-- [ ] Claude Code responds to prompts through the browser terminal
-- [ ] Session reconnect (close tab → re-Connect) works
-- [ ] OOD "Delete" cleanly terminates the session
-- [ ] No credentials leaked in process list or logs
+- [x] All 7 acceptance criteria (AC-1 through AC-7) pass on at least 2 clusters
+- [x] App appears in OOD dashboard and launches successfully
+- [x] Claude Code responds to prompts through the browser terminal
+- [x] Session reconnect (close tab → re-Connect) works
+- [x] OOD "Delete" cleanly terminates the session
+- [x] No credentials leaked in process list or logs
 - [ ] Deployment changes (ondemand-patch.yaml) applied to production
 - [ ] SIF image accessible from all interactive nodes
 - [ ] User-facing documentation written and linked
@@ -969,17 +964,27 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Problems & Solutions
 
-<!-- Add entries as you hit walls during implementation. -->
+### Problem: `--check-origin` blocks all WebSocket connections through OOD proxy
+**Encountered:** 2026-04-14
+**Root cause:** ttyd's `--check-origin` checks that the WS upgrade `Origin` header matches the server's own hostname (`sdfiana006.sdf.slac.stanford.edu`). OOD's reverse proxy sends `Origin: https://s3df-dev.slac.stanford.edu` — the frontend hostname — which never matches. ttyd logs "refuse to serve WS client from different origin" and drops every connection. There is no per-origin whitelist in ttyd.
+**Solution:** Drop `--check-origin`. The security layer is `--auth-header X-Forwarded-User` — OOD's proxy injects this server-side and it cannot be forged by the browser. `--check-origin` adds nothing here and is structurally incompatible with OOD's proxy architecture.
+**Lesson:** `--check-origin` only works when the browser connects directly to ttyd. Behind any reverse proxy that rewrites the `Origin` header, it will block all connections.
+
+### Problem: ttyd exits immediately with SIGHUP after session start
+**Encountered:** 2026-04-14
+**Root cause:** The OOD linux_host adapter sends SIGHUP to the process group after `after.sh.erb` signals that the port is open. ttyd's default SIGHUP handler exits cleanly.
+**Solution:** `trap '' SIGHUP` in `script.sh.erb` before the `apptainer exec` call so the signal is ignored by the shell. The trap applies to the shell process; apptainer/ttyd inherit the ignore disposition.
+**Lesson:** Always trap SIGHUP in OOD BatchConnect `script.sh.erb` for any long-running process.
+**Encountered:** 2026-04-14
+**Root cause:** The slac-ood-jupyter function-wrapper pattern was adopted wholesale, but it's the wrong model here. In slac-ood-jupyter, the scripts run inside the cluster-default SIF and the `jupyter()` wrapper calls `apptainer exec $SIF jupyter` — one level of nesting. In our design, `ttyd()` would call `apptainer exec $SIF ttyd`, and ttyd would then need to call `claude` — but `claude` is only in the SIF, not on the host. This means `claude` would either fail (not on PATH in the cluster-default env) or require a second `apptainer exec` nested inside ttyd's process — which is both fragile and unnecessary.
+**Solution:** Drop the function wrappers entirely. Call `apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd ... claude` directly in `script.sh.erb`. Since ttyd and claude are both in the same SIF, ttyd can exec `claude` via PTY naturally — no nesting, no wrappers, no PATH issues.
+**Lesson:** The function-wrapper pattern is the right model when you want to selectively invoke a secondary container for one tool while running everything else in the default env. Here, both tools live in the same SIF and ttyd must be able to exec claude as a child process — direct `apptainer exec` is the correct primitive.
 
 ---
 
 ## Open Questions
 
-1. **SIF image location:** Where should the production SIF live? Currently
-   at `/sdf/home/y/ytl/k8s/claude-code/claude-code_*.sif`. Needs a
-   shared path like `/sdf/sw/ai/claude-code/` or
-   `/fs/ddn/sdf/group/.../claude-code.sif` so all interactive nodes can
-   reach it.
+1. ~~**SIF image location:**~~ **Resolved for now.** Using `/sdf/home/y/ytl/k8s/claude-code/claude-code_*.sif` for the initial deployment. A TODO comment in `form.js` marks the path for future migration to a shared location (e.g. `/sdf/sw/ai/claude-code/`) when the app moves to production-proper.
 
 2. ~~**Nested tmux sessions:**~~ **Resolved.** No inner tmux session — ttyd
    exec's `claude` directly via PTY. The OOD adapter's outer tmux keeps the

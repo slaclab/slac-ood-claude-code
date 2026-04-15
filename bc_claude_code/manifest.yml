@@ -1,0 +1,10 @@
+---
+name: Claude Code
+category: Interactive Apps
+subcategory: Services
+role: batch_connect
+description: |
+  Launch a browser-based [Claude Code] terminal session on an interactive
+  node. Claude Code is an AI coding assistant that runs in your terminal.
+
+  [Claude Code]: https://docs.anthropic.com/en/docs/claude-code

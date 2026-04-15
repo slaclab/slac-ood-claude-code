@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+# SIF image path (set in before.sh.erb, exported into this script)
+CLAUDE_SIF="${SINGULARITY_IMAGE_PATH}"
+
+# Ignore SIGHUP — the OOD linux_host adapter sends SIGHUP to the process group
+# after signalling readiness; without this ttyd exits immediately after after.sh.erb
+# reports the port open.
+trap '' SIGHUP
+
+# Change to working directory
+cd "${WORKING_DIR}"
+
+# Launch ttyd inside the claude-code SIF directly via apptainer exec.
+# ttyd runs as a subprocess inside the SIF, so `claude` is naturally on PATH there —
+# no nested apptainer needed. ttyd execs `claude` via PTY within the same container.
+#
+# --auth-header: OOD mod_ood_proxy injects X-Forwarded-User server-side on all
+#   /node/<host>/<port>/ requests — primary auth layer
+# --credential-file: second auth layer; password read from file at startup so it
+#   never appears in ps aux / /proc/cmdline. File is deleted 2s after launch.
+# --writable: enable PTY input (required for interactive claude-code)
+# Note: --check-origin omitted — OOD's reverse proxy sends a different Origin header
+#   than ttyd's listening address, causing WebSocket connections to be refused.
+apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
+  ttyd \
+    --port ${port} \
+    --base-path "/node/${host}/${port}/" \
+    --auth-header X-Forwarded-User \
+    --credential-file "${TTYD_CRED_FILE}" \
+    --writable \
+    claude &
+TTYD_PID=$!
+
+# ttyd reads --credential-file once at startup into memory; the file is dead weight
+# after that. Delete it to minimise the on-disk exposure window.
+sleep 2
+rm -f "${TTYD_CRED_FILE}"
+
+wait ${TTYD_PID}

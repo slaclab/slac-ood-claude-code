@@ -28,6 +28,12 @@ fi
 SHOULD_OVERWRITE="<%= context.overwrite_settings == "1" ? "yes" : "no" %>"
 if [ ! -f "${HOME}/.claude/settings.json" ] || [ "${SHOULD_OVERWRITE}" = "yes" ]; then
   mkdir -p "${HOME}/.claude"
+  # Back up existing settings before overwriting
+  if [ "${SHOULD_OVERWRITE}" = "yes" ] && [ -f "${HOME}/.claude/settings.json" ]; then
+    BACKUP="${HOME}/.claude/settings.json.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "${HOME}/.claude/settings.json" "${BACKUP}"
+    echo "Backed up existing settings to ${BACKUP}"
+  fi
   (
   umask 077
   DELIM="SETTINGS_EOF_${RANDOM}"

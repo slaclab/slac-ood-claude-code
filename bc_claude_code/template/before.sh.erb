@@ -1,6 +1,15 @@
 # Export module function if available
 [[ $(type -t module) == "function" ]] && export -f module
 
+# Generate a per-session ttyd credential file (owner-read only, password never in process list).
+# Written to ~/ondemand with a PID-unique name — OOD's own data dir, always exists.
+# TTYD_USER / TTYD_PASS are local (not exported) to avoid /proc/<pid>/environ leakage.
+# TTYD_CRED_FILE is exported so script.sh.erb can pass it to ttyd and delete it after startup.
+export TTYD_CRED_FILE="${HOME}/ondemand/.ttyd-$$.cred"
+TTYD_USER="${USER}"
+TTYD_PASS="$(openssl rand -base64 16 | tr -d '=+/')"
+(umask 077; printf '%s:%s' "${TTYD_USER}" "${TTYD_PASS}" > "${TTYD_CRED_FILE}")
+
 # Find available port
 port=$(find_port ${host})
 

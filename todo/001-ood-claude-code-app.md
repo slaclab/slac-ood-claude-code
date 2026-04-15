@@ -308,30 +308,37 @@ The original plan used `--credential-file` which does not exist in ttyd.
 Verified from ttyd source (`server.c`) and README. The actual auth options are:
 - `-c user:pass` — password visible in `/proc/cmdline`
 - `--auth-header <header-name>` — checks for presence of named HTTP header
+- `--check-origin` — rejects WebSocket upgrades where `Origin` doesn't match the server host
 
 OOD's `mod_ood_proxy` (Lua) injects `X-Forwarded-User` on every proxied
 request server-side, set from the authenticated OOD session (`REMOTE_USER`).
 This header cannot be injected by the browser client — it is overwritten by
 the proxy.
 
+`--check-origin` is **incompatible with OOD's reverse proxy architecture**.
+ttyd checks that the `Origin` header on the WebSocket upgrade matches its own
+listening hostname (e.g. `sdfiana006.sdf.slac.stanford.edu`). OOD's proxy
+sends `Origin: https://s3df-dev.slac.stanford.edu` — the frontend hostname —
+which never matches. All WebSocket connections are refused with "refuse to serve
+WS client from different origin". There is no per-origin whitelist option in ttyd.
+
 #### Decision
 **`ttyd --auth-header X-Forwarded-User`** — delegates authentication entirely
 to OOD's existing session layer. No credential file needed. No password in
-process list.
+process list. `--check-origin` is omitted as it is structurally incompatible
+with OOD's reverse proxy.
 
 `view.html.erb` simply links to the ttyd URL — no POST form auth needed, as
 authentication happens via the OOD proxy header automatically.
 
 #### Consequences
-- `before.sh.erb` no longer needs to generate passwords or credential files
+- `before.sh.erb` does not need to generate passwords or credential files
 - `view.html.erb` is a simple link/button to `/node/${host}/${port}/`
+- `--check-origin` must not be used — OOD proxy origin never matches node hostname
 - **Accepted risk:** `--auth-header` checks header presence only (not value).
   A user on the SLAC internal network who can reach `<node>:<port>` directly
   and inject `X-Forwarded-User: anyone` bypasses auth. Mitigated by SLAC
-  network perimeter. Phase 0: evaluate `-c user:pass` secondary layer if
-  `hidepid=2` is confirmed active on S3DF interactive nodes.
-- `--check-origin` (`-O`) flag should also be set to block WebSocket
-  connections from unexpected origins as defence-in-depth
+  network perimeter.
 
 ---
 
@@ -965,7 +972,17 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Problems & Solutions
 
-### Problem: Function-wrapper pattern introduces unnecessary nested apptainer exec
+### Problem: `--check-origin` blocks all WebSocket connections through OOD proxy
+**Encountered:** 2026-04-14
+**Root cause:** ttyd's `--check-origin` checks that the WS upgrade `Origin` header matches the server's own hostname (`sdfiana006.sdf.slac.stanford.edu`). OOD's reverse proxy sends `Origin: https://s3df-dev.slac.stanford.edu` — the frontend hostname — which never matches. ttyd logs "refuse to serve WS client from different origin" and drops every connection. There is no per-origin whitelist in ttyd.
+**Solution:** Drop `--check-origin`. The security layer is `--auth-header X-Forwarded-User` — OOD's proxy injects this server-side and it cannot be forged by the browser. `--check-origin` adds nothing here and is structurally incompatible with OOD's proxy architecture.
+**Lesson:** `--check-origin` only works when the browser connects directly to ttyd. Behind any reverse proxy that rewrites the `Origin` header, it will block all connections.
+
+### Problem: ttyd exits immediately with SIGHUP after session start
+**Encountered:** 2026-04-14
+**Root cause:** The OOD linux_host adapter sends SIGHUP to the process group after `after.sh.erb` signals that the port is open. ttyd's default SIGHUP handler exits cleanly.
+**Solution:** `trap '' SIGHUP` in `script.sh.erb` before the `apptainer exec` call so the signal is ignored by the shell. The trap applies to the shell process; apptainer/ttyd inherit the ignore disposition.
+**Lesson:** Always trap SIGHUP in OOD BatchConnect `script.sh.erb` for any long-running process.
 **Encountered:** 2026-04-14
 **Root cause:** The slac-ood-jupyter function-wrapper pattern was adopted wholesale, but it's the wrong model here. In slac-ood-jupyter, the scripts run inside the cluster-default SIF and the `jupyter()` wrapper calls `apptainer exec $SIF jupyter` — one level of nesting. In our design, `ttyd()` would call `apptainer exec $SIF ttyd`, and ttyd would then need to call `claude` — but `claude` is only in the SIF, not on the host. This means `claude` would either fail (not on PATH in the cluster-default env) or require a second `apptainer exec` nested inside ttyd's process — which is both fragile and unnecessary.
 **Solution:** Drop the function wrappers entirely. Call `apptainer exec -B /sdf,/fs,/lscratch $SIF ttyd ... claude` directly in `script.sh.erb`. Since ttyd and claude are both in the same SIF, ttyd can exec `claude` via PTY naturally — no nesting, no wrappers, no PATH issues.

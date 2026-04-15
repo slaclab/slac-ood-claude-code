@@ -3,8 +3,9 @@
 | # | Title | Priority | Status | Branch | PR |
 |---|-------|----------|--------|--------|----|
 | [001](todo/001-ood-claude-code-app.md) | Open OnDemand Interactive App for Claude Code | 🟡 P2 | 🔄 In Progress | `feat/ood-claude-code-app` | — |
+| [002](todo/002-ttyd-password-file.md) | Patch ttyd to support password file auth | 🔵 P3 | 📋 Preparing | — | — |
 
-**Summary:** 0 done · 1 in progress · 0 open
+**Summary:** 0 done · 1 in progress · 0 open · 1 preparing
 
 ## Priority Key
 - P0 Critical — blocking, do immediately

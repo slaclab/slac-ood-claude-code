@@ -4,6 +4,11 @@
 # Find available port
 port=$(find_port ${host})
 
+# Generate ttyd credentials and write to a session-scoped credential file.
+# -c user:pass is accepted risk: password visible in /proc/cmdline on the node.
+# A future task will patch ttyd to support a password file to eliminate this exposure.
+export TTYD_USER="user"
+export TTYD_PASS=$(create_passwd 16)
 # Working directory (default to $HOME)
 # ERB strips shell metacharacters before interpolation to prevent command substitution.
 # context.working_dir is validated to contain only safe path characters.

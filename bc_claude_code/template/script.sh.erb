@@ -25,5 +25,6 @@ apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
     --port ${port} \
     --base-path "/node/${host}/${port}/" \
     --auth-header X-Forwarded-User \
+    -c "${TTYD_USER}:${TTYD_PASS}" \
     --writable \
     claude

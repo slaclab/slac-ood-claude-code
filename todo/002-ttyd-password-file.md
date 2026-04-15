@@ -12,13 +12,20 @@
 ## Problem Statement
 
 ttyd's `-c user:pass` flag passes the password as a command-line argument, making
-it visible in `/proc/cmdline` and `ps aux` output on the node. Any user with access
-to the interactive node can read another user's ttyd password.
+it visible in `ps aux` and `/proc/cmdline` on the node — confirmed in dev:
 
-The current `bc_claude_code` app uses `-c` as a secondary auth layer (in addition
-to `--auth-header X-Forwarded-User`) and accepts this risk. This task eliminates
-the exposure by patching ttyd to support reading credentials from a file (e.g.
-`--credential-file /path/to/creds`) so the password never appears in the process list.
+```
+ttyd --port 12258 --base-path /node/sdfiana007.../12258/ --auth-header X-Forwarded-User -c user:lRD1K2pE852XhdTV --writable claude
+```
+
+Any user on the interactive node can read another user's ttyd password. Because
+the password is exposed this way, `-c` provides no actual security benefit over
+`--auth-header X-Forwarded-User` alone — so it has been dropped from the current
+`bc_claude_code` app until this is resolved.
+
+This task adds `--credential-file` support to ttyd so the password never appears
+in the process list, at which point `-c`-equivalent auth can be re-enabled as a
+meaningful second layer.
 
 ### What fails today
 

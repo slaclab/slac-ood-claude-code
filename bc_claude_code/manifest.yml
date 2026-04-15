@@ -7,8 +7,4 @@ description: |
   Launch a browser-based [Claude Code] terminal session on an interactive
   node. Claude Code is an AI coding assistant that runs in your terminal.
 
-  Paste your SLAC AI API key, click Launch, and start coding with Claude
-  immediately. Sessions persist via tmux — you can close your browser and
-  reconnect later.
-
   [Claude Code]: https://docs.anthropic.com/en/docs/claude-code

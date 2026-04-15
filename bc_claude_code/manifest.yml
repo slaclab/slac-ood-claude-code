@@ -1,7 +1,7 @@
 ---
 name: Claude Code
 category: Interactive Apps
-subcategory: AI Tools
+subcategory: Services
 role: batch_connect
 description: |
   Launch a browser-based [Claude Code] terminal session on an interactive

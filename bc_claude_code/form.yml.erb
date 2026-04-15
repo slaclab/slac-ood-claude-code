@@ -13,26 +13,22 @@ attributes:
     widget: "text_field"
     label: "SLAC AI API Key"
     help: |
-      Your LiteLLM API key for ai-api.slac.stanford.edu. Get one at the
-      [AI API Portal](https://ai-api.slac.stanford.edu).
-
-      Written to `~/.claude/settings.json` on launch. Check **Overwrite existing
-      settings** below to replace an existing config (e.g. after a key rotation).
+      Get your key at [KB0015379](https://it.slac.stanford.edu/support/KB0015379).
     required: true
   overwrite_settings:
     widget: "check_box"
     label: "Overwrite existing settings"
     help: |
-      If checked, `~/.claude/settings.json` will be overwritten with the API key
-      above. Use this if your key has been rotated or you want to reset to defaults.
-      **Your existing settings will be lost.**
+      Overwrites `~/.claude/settings.json` with the API key above. Use after a key rotation or to reset to defaults.
     value: "0"
+  cluster:
+    help: |
+      Interactive node to run Claude Code on. Choose the cluster closest to your data.
   sif_version:
     widget: "select"
     label: "Claude Code Version"
     help: |
-      Version of Claude Code to run. "latest" is recommended for most users.
-      Older versions are available if you need to pin to a specific release.
+      Version of Claude Code to run. Latest is recommended.
     options:
       <%
         sifs = Dir.glob("/sdf/sw/claude-code/claude-code_*.sif")
@@ -50,15 +46,13 @@ attributes:
     value: ""
     placeholder: "$HOME (default)"
     help: |
-      Directory where Claude Code will start. Leave blank to use your home
-      directory. Must be an existing directory you have read/write access to.
+      Directory where Claude Code will start. Leave blank for your home directory.
   bc_num_hours:
     widget: "number_field"
     label: "Session Duration (hours)"
     value: 8
     help: |
-      Number of hours for the Claude Code session. Maximum is limited
-      by the cluster's site_timeout (typically 168 hours / 7 days).
+      How long to keep the session alive (max 168 hours).
     min: 1
     max: 168
     step: 1

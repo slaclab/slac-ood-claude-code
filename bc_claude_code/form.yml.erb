@@ -2,6 +2,7 @@
 cluster: '*'
 form:
   - api_key
+  - overwrite_settings
   - cluster
   - sif_version
   - working_dir
@@ -15,16 +16,17 @@ attributes:
       Your LiteLLM API key for ai-api.slac.stanford.edu. Get one at the
       [AI API Portal](https://ai-api.slac.stanford.edu).
 
-      **This key is written to `~/.claude/settings.json` on your first launch only.**
-      If `~/.claude/settings.json` already exists, this field is ignored and your
-      existing configuration is preserved.
-
-      **If your key stops working:** delete `~/.claude/settings.json` on the
-      interactive node, then relaunch this app with your new key.
-
-      If Claude Code shows API errors after connecting, your key may be invalid —
-      check the OOD session log or delete `~/.claude/settings.json` and relaunch.
+      Written to `~/.claude/settings.json` on launch. Check **Overwrite existing
+      settings** below to replace an existing config (e.g. after a key rotation).
     required: true
+  overwrite_settings:
+    widget: "check_box"
+    label: "Overwrite existing settings"
+    help: |
+      If checked, `~/.claude/settings.json` will be overwritten with the API key
+      above. Use this if your key has been rotated or you want to reset to defaults.
+      **Your existing settings will be lost.**
+    value: "0"
   sif_version:
     widget: "select"
     label: "Claude Code Version"

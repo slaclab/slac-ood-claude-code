@@ -24,15 +24,12 @@ if [ ! -f "${SINGULARITY_IMAGE_PATH}" ]; then
   clean_up 1
 fi
 
-# Write ~/.claude/settings.json if it does not exist
-if [ ! -f "${HOME}/.claude/settings.json" ]; then
+# Write ~/.claude/settings.json — overwrite if checked, write-if-absent otherwise
+SHOULD_OVERWRITE="<%= context.overwrite_settings == "1" ? "yes" : "no" %>"
+if [ ! -f "${HOME}/.claude/settings.json" ] || [ "${SHOULD_OVERWRITE}" = "yes" ]; then
   mkdir -p "${HOME}/.claude"
   (
   umask 077
-  # Use randomized delimiter to prevent injection if API key contains SETTINGS_EOF.
-  # Unquoted << ${DELIM}: shell expands DELIM to get the terminator string, AND
-  # expands variables in the body — but ERB has already substituted api_key,
-  # so there are no remaining shell variables to expand in the JSON body.
   DELIM="SETTINGS_EOF_${RANDOM}"
   cat > "${HOME}/.claude/settings.json" << ${DELIM}
 {
@@ -47,7 +44,11 @@ if [ ! -f "${HOME}/.claude/settings.json" ]; then
 }
 ${DELIM}
   )
-  echo "Wrote ~/.claude/settings.json with API key from form."
+  if [ "${SHOULD_OVERWRITE}" = "yes" ]; then
+    echo "Overwrote ~/.claude/settings.json with API key from form."
+  else
+    echo "Wrote ~/.claude/settings.json with API key from form."
+  fi
 else
   echo "~/.claude/settings.json already exists — preserving existing config."
 fi

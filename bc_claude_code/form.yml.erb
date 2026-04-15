@@ -13,7 +13,7 @@ attributes:
     widget: "text_field"
     label: "SLAC AI API Key"
     help: |
-      Get your key at [KB0015379](https://it.slac.stanford.edu/support/KB0015379).
+      Request access at [SLAC AI API Service](https://slacprod.servicenowservices.com/it_services?id=sc_cat_item&sys_id=515f28711b607110c5d320eae54bcb64&sysparm_category=d65827c46fd921009c4235af1e3ee434).
     required: true
   overwrite_settings:
     widget: "check_box"
@@ -22,8 +22,11 @@ attributes:
       Overwrites `~/.claude/settings.json` with the API key above. Use after a key rotation or to reset to defaults.
     value: "0"
   cluster:
+    label: "Interactive Cluster"
     help: |
-      Interactive node to run Claude Code on. Choose the cluster closest to your data.
+      The S3DF interactive cluster to run Claude Code on. Available clusters:
+      **iana** (general), **rubin**, **psana**, **suncat**, **supercdms**, **neutrino**, **mli**.
+      Choose the one associated with your experiment or data.
   sif_version:
     widget: "select"
     label: "Claude Code Version"

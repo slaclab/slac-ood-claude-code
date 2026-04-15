@@ -1,11 +1,11 @@
 # 001 — Open OnDemand Interactive App for Claude Code
 
 > **Priority:** 🟡 P2 — Medium
-> **Status:** 🔄 In Progress
+> **Status:** ✅ Merged
 > **Branch:** `feat/ood-claude-code-app`
 > **PR:** —
 > **Created:** 2026-04-09
-> **Shipped:** —
+> **Shipped:** 2026-04-15
 
 ---
 
@@ -855,31 +855,22 @@ Three additions to `ondemand-patch.yaml` (same pattern as slac-ood-jupyter):
 
 Manual testing on an interactive node. No code committed — just answers.
 
-- [ ] SSH to an interactive node (e.g. `ssh sdfiana005`)
-- [ ] Verify `find_port` and `create_passwd` are available in the cluster-default
+- [x] SSH to an interactive node (e.g. `ssh sdfiana005`)
+- [x] Verify `find_port` and `create_passwd` are available in the cluster-default
       SIF (the adapter runs scripts there, not in the claude-code SIF)
-- [ ] Test nested apptainer — from inside the default SIF, run:
+- [x] Test nested apptainer — from inside the default SIF, run:
       `apptainer exec -B /sdf,/fs,/lscratch <claude-code-SIF> which ttyd`
       `apptainer exec -B /sdf,/fs,/lscratch <claude-code-SIF> which claude`
-      → **Record whether nested apptainer exec works**
-- [ ] Test function-wrapper pattern manually:
-      ```bash
-      CLAUDE_SIF="/sdf/home/y/ytl/k8s/claude-code/claude-code_2.1.104.sif"
-      function ttyd() { apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" ttyd "$@"; }
-      ttyd --port 8888 --base-path /node/$(hostname)/8888/ \
-           --auth-header X-Forwarded-User --writable bash
-      ```
-- [ ] Test `--auth-header` behaviour: without OOD proxy, direct curl to ttyd
-      should get 407. Through OOD `/node/` proxy, should work.
-- [ ] Access `https://ondemand.slac.stanford.edu/node/<host>/8888/` in browser
-      → Confirm OOD injects X-Forwarded-User and ttyd accepts the connection
-- [ ] Confirm WebSocket upgrade works through OOD proxy (xterm.js renders)
-- [ ] Test Claude Code TUI through ttyd: colors, cursor, ctrl-C, permission prompts
-- [ ] Verify `<%= session.id %>` resolves to a per-session UUID in shell ERB
-      templates; if not, test `basename $PWD` as fallback for unique naming
-- [ ] Test `hidepid=2` status on interactive nodes: `cat /proc/1/cmdline` from
-      another user — if masked, evaluate adding `-c user:pass` secondary auth
-- [ ] **Record all findings in Problems & Solutions section**
+      → **Nested apptainer not needed — direct `apptainer exec` used instead**
+- [x] Test function-wrapper pattern manually → **abandoned in favour of direct `apptainer exec`**
+- [x] Test `--auth-header` behaviour → **`--auth-header X-Forwarded-User` confirmed via OOD proxy**
+- [x] Access `https://ondemand.slac.stanford.edu/node/<host>/8888/` in browser
+      → Confirmed OOD injects X-Forwarded-User and ttyd accepts the connection
+- [x] Confirm WebSocket upgrade works through OOD proxy (xterm.js renders)
+- [x] Test Claude Code TUI through ttyd: colors, cursor, ctrl-C, permission prompts
+- [x] Verify `<%= session.id %>` resolves — **not needed; no inner tmux, no session ID required**
+- [x] Test `hidepid=2` status — **`--auth-header` approach means no password to protect; `-c user:pass` deferred to TODO #002**
+- [x] **Findings recorded in Problems & Solutions section**
 
 **Gate:** If nested apptainer exec fails, escalate to Option A (submit.yml.erb
 container override) before proceeding to Slice 1.
@@ -921,8 +912,8 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Implementation Checklist
 
-- [ ] **Slice 0:** Spike — /usr overlay tested, findings recorded
-- [ ] **Slice 0:** ADR-002 resolved (if tools were masked)
+- [x] **Slice 0:** Spike — /usr overlay tested, findings recorded
+- [x] **Slice 0:** ADR-002 resolved (direct `apptainer exec`, no function wrappers)
 - [x] **Slice 1:** manifest.yml written
 - [x] **Slice 1:** form.yml.erb written
 - [x] **Slice 1:** form.js written
@@ -931,10 +922,11 @@ Deploy to OOD and validate all acceptance criteria.
 - [x] **Slice 1:** template/before.sh.erb written
 - [x] **Slice 1:** template/script.sh.erb written
 - [x] **Slice 1:** template/after.sh.erb written
-- [ ] **Slice 2:** AC-1 through AC-7 all pass
-- [ ] **Slice 2:** Session reconnect (close tab → re-Connect) works
-- [ ] **Slice 3:** ondemand-patch.yaml updated in slac-ondemand repo
-- [ ] **Slice 3:** Deployed to production OOD
+- [x] **Slice 2:** AC-1 through AC-7 all pass
+- [x] **Slice 2:** Session reconnect (close tab → re-Connect) works
+- [x] **Slice 3:** ondemand-patch.yaml updated in slac-ondemand repo (dev; stage/prod migration deferred)
+- [x] **Slice 3:** Deployed to OOD (dev environment; prod migration deferred)
+- [x] **Slice 3:** SIF accessible from all interactive nodes
 - [ ] **Slice 3:** User-facing docs written
 
 ---
@@ -957,12 +949,12 @@ Deploy to OOD and validate all acceptance criteria.
 
 ## Definition of Done
 
-- [ ] All 7 acceptance criteria (AC-1 through AC-7) pass on at least 2 clusters
-- [ ] App appears in OOD dashboard and launches successfully
-- [ ] Claude Code responds to prompts through the browser terminal
-- [ ] Session reconnect (close tab → re-Connect) works
-- [ ] OOD "Delete" cleanly terminates the session
-- [ ] No credentials leaked in process list or logs
+- [x] All 7 acceptance criteria (AC-1 through AC-7) pass on at least 2 clusters
+- [x] App appears in OOD dashboard and launches successfully
+- [x] Claude Code responds to prompts through the browser terminal
+- [x] Session reconnect (close tab → re-Connect) works
+- [x] OOD "Delete" cleanly terminates the session
+- [x] No credentials leaked in process list or logs
 - [ ] Deployment changes (ondemand-patch.yaml) applied to production
 - [ ] SIF image accessible from all interactive nodes
 - [ ] User-facing documentation written and linked

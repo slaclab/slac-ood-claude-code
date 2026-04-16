@@ -4,8 +4,9 @@
 |---|-------|----------|--------|--------|----|
 | [001](todo/001-ood-claude-code-app.md) | Open OnDemand Interactive App for Claude Code | 🟡 P2 | ✅ Merged | `feat/ood-claude-code-app` | — |
 | [002](todo/002-ttyd-password-file.md) | Patch ttyd to support password file auth | 🔵 P3 | ✅ Merged | — | — |
+| [003](todo/003-ttyd-https.md) | Encrypt OOD → ttyd traffic with HTTPS/WSS | 🔵 P3 | 📋 Preparing | — | — |
 
-**Summary:** 2 merged · 0 in progress · 0 open
+**Summary:** 2 merged · 0 in progress · 1 open
 
 ## Priority Key
 - P0 Critical — blocking, do immediately

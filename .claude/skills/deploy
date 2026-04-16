@@ -1,0 +1,110 @@
+---
+name: deploy
+description: Deploy slac-ood-claude-code to the OOD dev and/or prod overlay by advancing the prod branch and (optionally) restarting the affected pods.
+---
+
+# Deploy slac-ood-claude-code
+
+Advances the `prod` branch to match `main` and pushes it to GitHub. The gitclone
+sidecar in the OOD Kubernetes overlay pulls from this branch, so a pod restart is
+the final step to pick up the new code.
+
+## When to Use
+
+- After merging work to `main` that should go live in the OOD app
+- After adding/changing `form.yml.erb`, `template/`, `manifest.yml`, or any app file
+- Whenever the user says "deploy", "release", or "ship this"
+
+---
+
+## Step 1 — Verify `main` is clean and ahead of `prod`
+
+```bash
+git status                                     # must be clean
+git log --oneline prod..main                   # commits to be promoted — review these
+git merge-base --is-ancestor prod main \
+  && echo "prod is ancestor of main (fast-forward safe)" \
+  || echo "WARNING: prod is not ancestor of main — investigate before proceeding"
+```
+
+If there are no commits in `prod..main`, there is nothing to deploy — stop and
+tell the user.
+
+## Step 2 — Fast-forward local `prod` to `main`
+
+```bash
+git update-ref refs/heads/prod refs/heads/main
+git log --oneline -3 prod                      # confirm
+```
+
+## Step 3 — Push `prod` to remote
+
+Use the explicit refspec to avoid tag/branch ambiguity (a `prod` tag may exist
+on the remote):
+
+```bash
+# Delete remote prod tag if it exists (silently ignore if absent)
+git push origin :refs/tags/prod 2>/dev/null || true
+
+# Push branch explicitly
+git push origin refs/heads/prod:refs/heads/prod --force-with-lease
+```
+
+If `--force-with-lease` fails, the remote has commits that aren't local. Fetch
+and investigate before retrying:
+
+```bash
+git fetch origin prod
+git log --oneline prod..origin/prod            # what's on remote that isn't local?
+```
+
+## Step 4 — Restart affected OOD pods (optional)
+
+The gitclone sidecar runs `git pull origin prod` in a loop (every ~60s), so pods
+will self-update without a restart. To force an immediate pickup:
+
+```bash
+export KUBECONFIG=/sdf/home/y/ytl/.kube//contexts/ondemand/prod
+# Dev overlay
+kubectl -n dev rollout restart deployment/ondemand
+kubectl -n dev rollout status  deployment/ondemand
+
+# Prod overlay (only when explicitly requested by user)
+kubectl -n prod rollout restart deployment/ondemand
+kubectl -n prod rollout status  deployment/ondemand
+```
+
+**Never restart the prod overlay unless the user explicitly asks.**
+
+## Step 5 — Verify
+
+After pods are running, confirm the gitclone sidecar pulled the latest commit:
+
+```bash
+export KUBECONFIG=/sdf/home/y/ytl/.kube//contexts/ondemand/prod
+POD=$(kubectl -n dev get pods -l app=ondemand -o name | head -1)
+
+# Check the slac-ood-claude-code sidecar picked up the new code
+kubectl -n dev exec ${POD} -c slac-ood-claude-code -- git -C /app log --oneline -3
+
+# Check app files are visible to the main container
+kubectl -n dev exec ${POD} -c ondemand -- ls /var/www/ood/apps/sys/bc_claude_code/
+```
+
+The HEAD commit shown in the sidecar should match `git log --oneline -1 prod`.
+
+## Step 6 — Update TODO.md
+
+After a successful deployment, update the relevant task's status to `🚀 Deployed`
+in both the task file and `TODO.md`.
+
+---
+
+## Quick reference — common failure modes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `git push` rejected, tag ambiguity | Remote `prod` tag exists | `git push origin :refs/tags/prod` first |
+| `--force-with-lease` rejected | Remote has commits not in local `prod` | `git fetch origin prod && git log prod..origin/prod` |
+| Sidecar shows old commit after restart | gitclone loop hasn't fired yet | Wait 60s or exec into sidecar and run `git pull origin prod` manually |
+| `/var/www/ood/apps/sys/bc_claude_code/` empty | emptyDir not yet populated | Sidecar init container may still be running; check pod events |

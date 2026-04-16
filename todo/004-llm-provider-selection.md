@@ -32,6 +32,8 @@ for each.
 | User with LiteLLM repo allocation | Must still enter a Bedrock key — no LiteLLM path exists | Can select LiteLLM provider, enter `facility:repo`, and launch without a Bedrock key |
 | User with Bedrock key | Works today | Unchanged |
 | Form layout | Single text field (api_key) always visible | API key field hidden when LiteLLM selected; repo field shown instead |
+| settings.json update | Full file rewrite only on first launch or "overwrite" checkbox | Relevant ENV entries always updated on each launch (via `sed` in-place); full clear only when "Clear settings.json" checked |
+| "Overwrite existing settings" checkbox | Rewrites entire `~/.claude/settings.json` | Renamed to **"Clear settings.json"** — deletes the file entirely so Claude Code rewrites it from scratch; normal path always updates just the provider ENV keys |
 
 ---
 
@@ -42,15 +44,23 @@ for each.
 2. Selecting Bedrock shows the existing API key field (unchanged behaviour)
 3. Selecting SDF-Sage shows a `facility:repo` text field and a provider
    sub-select (e.g. `copilot`, `s3df`, `bedrock`, …)
-4. `before.sh.erb` writes the correct `~/.claude/settings.json` block for the
-   selected provider:
-   - **Bedrock:** existing block (ANTHROPIC_BASE_URL=ai-api.slac.stanford.edu,
-     ANTHROPIC_AUTH_TOKEN=key)
-   - **SDF-Sage:** new block (ANTHROPIC_BASE_URL=https://llm.sdf.slac.stanford.edu,
-     NODE_TLS_REJECT_UNAUTHORIZED=0, model env vars using `facility:repo/model`
-     naming, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)
-5. `form.js` shows/hides fields dynamically based on the provider selection
-6. The API key field remains masked as password-type when visible
+4. `before.sh.erb` **always updates** the relevant ENV keys in
+   `~/.claude/settings.json` on every session launch — using `sed` to update
+   entries in-place if the file exists, or writing a fresh file if it doesn't.
+   The two URL/auth blocks:
+   - **Bedrock:** `ANTHROPIC_BASE_URL=https://ai-api.slac.stanford.edu` +
+     `ANTHROPIC_AUTH_TOKEN=<key>`
+   - **SDF-Sage:** `ANTHROPIC_BASE_URL=https://llm.sdf.slac.stanford.edu` +
+     model env vars using `facility:repo/provider/model` naming +
+     `NODE_TLS_REJECT_UNAUTHORIZED=0` +
+     `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+5. The **"Overwrite existing settings"** checkbox is renamed to **"Clear
+   settings.json"** — when checked it deletes `~/.claude/settings.json`
+   entirely before the session starts, allowing Claude Code to recreate it
+   from scratch. Useful after a corruption or major config reset. The normal
+   path (unchecked) always updates just the provider ENV keys in-place.
+6. `form.js` shows/hides fields dynamically based on the provider selection
+7. The API key field remains masked as password-type when visible
 
 ## Non-Goals
 
@@ -72,7 +82,7 @@ llm_provider     — select: "bedrock" | "sdf_sage"   (new, shown always)
 api_key          — text_field (existing, shown only when llm_provider=bedrock)
 sdf_sage_repo    — text_field "facility:repo"        (new, shown only when llm_provider=sdf_sage)
 sdf_sage_provider— select: copilot | s3df | bedrock  (new, shown only when llm_provider=sdf_sage)
-overwrite_settings — check_box (existing, unchanged)
+clear_settings   — check_box "Clear settings.json"   (replaces overwrite_settings)
 ```
 
 ### Field ordering in `form:`
@@ -88,7 +98,7 @@ form:
   - working_dir
   - bc_num_hours
   - bc_email_on_started
-  - overwrite_settings
+  - clear_settings
 ```
 
 ### `form.js` — show/hide logic
@@ -119,73 +129,137 @@ update_provider_fields();  // run on load to set initial state
 Note: disabling hidden fields prevents OOD from enforcing `required: true` on
 hidden inputs and keeps the submitted params clean.
 
-### `before.sh.erb` — provider-branched settings block
+### `before.sh.erb` — always-update via `sed`, optional clear
 
-Current settings block is replaced with a conditional:
+The key behavioural change: instead of a write-once-or-overwrite pattern, we
+**always `sed` the relevant ENV keys** into `~/.claude/settings.json` on every
+launch. This means switching providers between sessions Just Works without the
+user needing to remember to check a box.
+
+The **"Clear settings.json"** checkbox (replaces "Overwrite existing settings")
+deletes the file entirely *before* the update step — useful for resetting all
+custom config (keybindings, permissions, etc.) that the sed approach would
+otherwise preserve.
+
+**ENV keys managed by this script (always updated):**
+- Bedrock path: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
+  `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
+  `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`
+- SDF-Sage path: `ANTHROPIC_BASE_URL`, `NODE_TLS_REJECT_UNAUTHORIZED`,
+  `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`,
+  `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+
+Keys not in this list (user customisations) are left untouched.
 
 ```bash
-SHOULD_OVERWRITE="<%= context.overwrite_settings == "1" ? "yes" : "no" %>"
-LLM_PROVIDER="<%= context.llm_provider %>"
+<%
+  llm_provider    = context.llm_provider.to_s.strip
+  api_key         = context.api_key.to_s.strip
+  sdf_provider    = context.sdf_sage_provider.to_s.strip
+  sdf_repo        = context.sdf_sage_repo.to_s.strip
+  sdf_repo        = "" unless sdf_repo.match?(/\A[A-Za-z0-9_\-]+:[A-Za-z0-9_\-\/]+\z/)
+  sdf_provider    = "" unless sdf_provider.match?(/\A[A-Za-z0-9_\-]+\z/)
+  clear_settings  = context.clear_settings == "1"
+%>
 
-if [ ! -f "${HOME}/.claude/settings.json" ] || [ "${SHOULD_OVERWRITE}" = "yes" ]; then
-  mkdir -p "${HOME}/.claude"
-  # Back up if overwriting
-  if [ "${SHOULD_OVERWRITE}" = "yes" ] && [ -f "${HOME}/.claude/settings.json" ]; then
-    BACKUP="${HOME}/.claude/settings.json.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "${HOME}/.claude/settings.json" "${BACKUP}"
-    echo "Backed up existing settings to ${BACKUP}"
-  fi
+LLM_PROVIDER="<%= llm_provider %>"
+SETTINGS="${HOME}/.claude/settings.json"
 
-  (
-  umask 077
-  DELIM="SETTINGS_EOF_${RANDOM}"
-
-  if [ "${LLM_PROVIDER}" = "bedrock" ]; then
-    cat > "${HOME}/.claude/settings.json" << ${DELIM}
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://ai-api.slac.stanford.edu",
-    "ANTHROPIC_AUTH_TOKEN": "<%= context.api_key %>",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "us.anthropic.claude-sonnet-4-6",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL":   "us.anthropic.claude-opus-4-6-v1",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL":  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
-  }
-}
-${DELIM}
-
-  else
-    # SDF-Sage LiteLLM proxy
-    # sdf_sage_provider is e.g. "copilot", "s3df", "bedrock"
-    # sdf_sage_repo is e.g. "scs:admin" — prefixed to each model name
-    <%
-      provider = context.sdf_sage_provider.to_s.strip
-      repo     = context.sdf_sage_repo.to_s.strip
-      # Validate: facility:repo format, safe characters only
-      repo     = "" unless repo.match?(/\A[A-Za-z0-9_\-]+:[A-Za-z0-9_\-\/]+\z/)
-      provider = "" unless provider.match?(/\A[A-Za-z0-9_\-]+\z/)
-    %>
-    cat > "${HOME}/.claude/settings.json" << ${DELIM}
-{
-  "env": {
-    "ANTHROPIC_BASE_URL":                    "https://llm.sdf.slac.stanford.edu",
-    "NODE_TLS_REJECT_UNAUTHORIZED":          "0",
-    "ANTHROPIC_SMALL_FAST_MODEL":            "<%= repo %>/<%= provider %>/claude-haiku-4.5",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL":         "<%= repo %>/<%= provider %>/claude-haiku-4.5",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL":        "<%= repo %>/<%= provider %>/claude-sonnet-4.6",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL":          "<%= repo %>/<%= provider %>/claude-opus-4.6",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
-  }
-}
-${DELIM}
-  fi
-  )
-
-  chmod go-rwx "${HOME}/.claude/settings.json"
-  echo "Wrote ~/.claude/settings.json for provider: ${LLM_PROVIDER}"
-else
-  echo "~/.claude/settings.json already exists — preserving existing config."
+# Clear settings.json if checkbox was ticked
+<% if clear_settings %>
+if [ -f "${SETTINGS}" ]; then
+  BACKUP="${SETTINGS}.bak.$(date +%Y%m%d_%H%M%S)"
+  mv "${SETTINGS}" "${BACKUP}"
+  echo "Cleared settings.json (backed up to ${BACKUP})"
 fi
+<% end %>
+
+# Build the env block for this provider
+if [ "${LLM_PROVIDER}" = "bedrock" ]; then
+  declare -A CLAUDE_ENVS=(
+    [ANTHROPIC_BASE_URL]="https://ai-api.slac.stanford.edu"
+    [ANTHROPIC_AUTH_TOKEN]="<%= api_key %>"
+    [ANTHROPIC_DEFAULT_SONNET_MODEL]="us.anthropic.claude-sonnet-4-6"
+    [ANTHROPIC_DEFAULT_OPUS_MODEL]="us.anthropic.claude-opus-4-6-v1"
+    [ANTHROPIC_DEFAULT_HAIKU_MODEL]="us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    [CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS]="1"
+  )
+  # Remove SDF-Sage-only keys that may linger from a previous session
+  REMOVE_KEYS=(NODE_TLS_REJECT_UNAUTHORIZED ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
+else
+  declare -A CLAUDE_ENVS=(
+    [ANTHROPIC_BASE_URL]="https://llm.sdf.slac.stanford.edu"
+    [NODE_TLS_REJECT_UNAUTHORIZED]="0"
+    [ANTHROPIC_SMALL_FAST_MODEL]="<%= sdf_repo %>/<%= sdf_provider %>/claude-haiku-4.5"
+    [ANTHROPIC_DEFAULT_HAIKU_MODEL]="<%= sdf_repo %>/<%= sdf_provider %>/claude-haiku-4.5"
+    [ANTHROPIC_DEFAULT_SONNET_MODEL]="<%= sdf_repo %>/<%= sdf_provider %>/claude-sonnet-4.6"
+    [ANTHROPIC_DEFAULT_OPUS_MODEL]="<%= sdf_repo %>/<%= sdf_provider %>/claude-opus-4.6"
+    [CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC]="1"
+  )
+  # Remove Bedrock-only keys that may linger from a previous session
+  REMOVE_KEYS=(ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
+fi
+
+# Ensure settings.json exists with minimal structure if absent
+mkdir -p "${HOME}/.claude"
+if [ ! -f "${SETTINGS}" ]; then
+  (umask 077; printf '{"env":{}}\n' > "${SETTINGS}")
+fi
+
+# Upsert each key into the "env" object using sed.
+# Pattern: find existing "KEY": "..." line and replace value,
+#          or append before the closing } of the env block if absent.
+upsert_env_key() {
+  local key="$1" value="$2" file="$3"
+  # Escape value for sed replacement (forward slashes, ampersands)
+  local escaped
+  escaped="$(printf '%s' "${value}" | sed 's/[\/&]/\\&/g')"
+  if grep -q "\"${key}\"" "${file}"; then
+    sed -i "s|\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"${key}\": \"${escaped}\"|g" "${file}"
+  else
+    # Append before the closing } of the env block
+    sed -i "/\"env\"[[:space:]]*:[[:space:]]*{/,/}/{
+      /}[[:space:]]*$/{
+        s|}[[:space:]]*$|  \"${key}\": \"${escaped}\"\n  }|
+      }
+    }" "${file}"
+  fi
+}
+
+for key in "${!CLAUDE_ENVS[@]}"; do
+  upsert_env_key "${key}" "${CLAUDE_ENVS[$key]}" "${SETTINGS}"
+done
+
+# Remove keys belonging to the other provider
+for key in "${REMOVE_KEYS[@]}"; do
+  sed -i "/\"${key}\"[[:space:]]*:/d" "${SETTINGS}"
+done
+
+chmod go-rwx "${SETTINGS}"
+echo "Updated ~/.claude/settings.json for provider: ${LLM_PROVIDER}"
+```
+
+> **Note:** The `upsert_env_key` sed logic above is indicative. The exact
+> implementation should be validated against real settings.json files —
+> especially the append-if-absent branch, which depends on the file's
+> formatting. An alternative is to use `python3 -c` with `json` module for
+> reliable JSON manipulation if sed proves fragile.
+
+### "Clear settings.json" checkbox
+
+Replaces `overwrite_settings`. Label and help text in `form.yml.erb`:
+
+```yaml
+clear_settings:
+  widget: "check_box"
+  label: "Clear settings.json"
+  help: |
+    Deletes `~/.claude/settings.json` before starting, allowing Claude Code
+    to recreate it from scratch. Use after a major config reset or corruption.
+    Your provider and API key will be written fresh. **All other customisations
+    (permissions, keybindings, etc.) will be lost.**
+  value: "0"
 ```
 
 ### Model name format for SDF-Sage
@@ -207,11 +281,14 @@ concatenated in `before.sh.erb` at settings-write time.
 |----------|--------|-----------|
 | Provider selection widget | `select` (not radio) | Consistent with other OOD form widgets; easy to extend with more providers later |
 | Field visibility | JS show/hide + `disabled` attribute | OOD's `form.js` pattern; disabled fields not validated as required |
-| Input validation | ERB regex in `before.sh.erb` | Prevents shell injection via `facility:repo` field; empty string fallback writes a visibly broken config rather than executing arbitrary code |
+| Settings update strategy | `sed` upsert on every launch | Users can switch provider between sessions without touching a checkbox; other customisations (keybindings, permissions) are preserved |
+| "Overwrite" → "Clear" | Rename checkbox, change semantics | "Overwrite" implied a full rewrite every time; "Clear" is a deliberate reset action, distinct from the normal always-update path |
+| Stale key removal | `sed -i "/KEY/d"` for other-provider keys | Prevents e.g. `ANTHROPIC_AUTH_TOKEN` lingering when user switches to SDF-Sage |
+| Input validation | ERB regex in `before.sh.erb` | Prevents shell injection via `facility:repo` field; empty string fallback writes visibly broken (but harmless) config |
 | `NODE_TLS_REJECT_UNAUTHORIZED: "0"` | Included for SDF-Sage | LiteLLM proxy uses self-signed cert; required for Claude Code to connect |
-| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `"1"` for SDF-Sage only | Prevents Claude Code from calling anthropic.com for telemetry/updates when routing through LiteLLM |
-| No ANTHROPIC_AUTH_TOKEN for SDF-Sage | Omitted | LiteLLM proxy uses facility allocation auth, not a per-user Bedrock key |
-| api_key `required: true` | Needs conditional | Must be `required: false` when SDF-Sage is selected; form.js `disabled` attr handles this — OOD skips validation for disabled fields |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `"1"` for SDF-Sage only | Prevents Claude Code calling anthropic.com for telemetry/updates when routing through LiteLLM |
+| No ANTHROPIC_AUTH_TOKEN for SDF-Sage | Omitted | LiteLLM proxy uses facility allocation auth, not a per-user key |
+| api_key `required: true` | Change to `required: false` | JS `disabled` attr prevents submission when SDF-Sage is selected; server-side guard in `before.sh.erb` handles edge cases |
 
 ---
 
@@ -219,41 +296,48 @@ concatenated in `before.sh.erb` at settings-write time.
 
 ### Step 1 — Update `form.yml.erb`
 
-Add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo` attributes. Change
-`api_key` from `required: true` to `required: false` (JS enforcement when
-Bedrock is selected is sufficient; server-side the field arrives empty for
-SDF-Sage). Update `form:` field order.
+Add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo` attributes. Rename
+`overwrite_settings` → `clear_settings` with updated label/help. Change
+`api_key` from `required: true` to `required: false`. Update `form:` field
+order.
 
 ### Step 2 — Update `form.js`
 
 Add `update_provider_fields()` function and `toggle_field()` helper. Call on
-page load and on provider `change` event. Keep existing `filter_interactive_clusters()`
-and `mask_api_key()` (only runs when api_key is visible).
+page load and on provider `change` event. Keep existing
+`filter_interactive_clusters()` and `mask_api_key()`.
 
 ### Step 3 — Update `before.sh.erb`
 
-Replace the single settings block with the provider-branched conditional (see
+Replace the write-once settings block with the sed-based upsert approach (see
 Design). Add ERB-level input validation for `sdf_sage_repo` and
-`sdf_sage_provider`. Keep existing ttyd credential file and SIF path logic
-unchanged.
+`sdf_sage_provider`. Handle stale key removal for the non-selected provider.
+Replace `overwrite_settings` reference with `clear_settings` (delete-then-
+recreate semantics).
+
+Validate the sed append-if-absent branch against real settings.json files
+before shipping — consider falling back to `python3 -c 'import json,sys; ...'`
+if sed proves fragile on OOD's JSON formatting.
 
 ### Step 4 — Smoke test
 
 Launch a session with each provider:
-- **Bedrock:** existing settings block written correctly; api_key field masked
-- **SDF-Sage:** new settings block written with correct model names; api_key
-  field hidden; `facility:repo` visible and submitted
+- **Bedrock:** correct settings block; api_key masked; SDF-Sage keys absent
+- **SDF-Sage:** correct settings block; model names `facility:repo/provider/model`; Bedrock keys absent; api_key field hidden
+- **Switch provider between sessions:** keys updated correctly without clear checkbox
+- **Clear checkbox:** file deleted and recreated fresh
 
 ---
 
 ## Implementation Checklist
 
-- [ ] Update `form.yml.erb`: add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo`; set `api_key: required: false`
+- [ ] Update `form.yml.erb`: add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo`; rename `overwrite_settings` → `clear_settings`; set `api_key: required: false`
 - [ ] Update `form.js`: add `update_provider_fields()`, `toggle_field()`; call on load + change
-- [ ] Update `before.sh.erb`: provider-branched settings block; ERB input validation for sdf_sage fields
-- [ ] Smoke test Bedrock path: settings.json correct, api_key masked, overwrite_settings works
-- [ ] Smoke test SDF-Sage path: settings.json correct, model names formatted as `facility:repo/provider/model`
-- [ ] Verify hidden fields are not submitted / not required when provider is not selected
+- [ ] Update `before.sh.erb`: sed-based upsert; stale key removal; `clear_settings` delete-before-write; ERB input validation
+- [ ] Smoke test Bedrock path: settings.json correct, api_key masked, SDF-Sage keys absent
+- [ ] Smoke test SDF-Sage path: settings.json correct, model names formatted as `facility:repo/provider/model`, Bedrock keys absent
+- [ ] Smoke test provider switch: launch Bedrock, then SDF-Sage without clearing — verify keys updated
+- [ ] Smoke test "Clear settings.json": file deleted and recreated correctly
 
 ---
 
@@ -269,11 +353,10 @@ Launch a session with each provider:
    proxy should ideally get a valid cert (Let's Encrypt or SLAC CA). Until then,
    `"0"` is required. Track separately.
 
-3. **Should `api_key` be truly optional at the form level?** — If `required:
-   false` is set, OOD won't block submission even when Bedrock is selected and
-   the field is empty. The `disabled` attribute from JS should prevent this in
-   practice, but a server-side guard in `before.sh.erb` (error if Bedrock
-   selected and key is empty) would be safer.
+3. **Server-side guard for empty Bedrock key** — the sed upsert will write
+   `"ANTHROPIC_AUTH_TOKEN": ""` if the user somehow submits Bedrock with no
+   key (e.g. JS disabled). Add an ERB guard: if `llm_provider == "bedrock"` and
+   `api_key` is blank, abort with a clear error message.
 
 4. **What is the exact `facility:repo` format users should enter?** — The example
    uses `scs:admin`. Confirm format and provide an example in the field's `help:`

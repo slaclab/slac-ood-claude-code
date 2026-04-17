@@ -106,9 +106,15 @@ RUN pip3 install --break-system-packages \
     boto3 \
     # Data / validation
     pydantic \
-    mempalace \
     # MCP server: fetch URLs and convert to markdown (saves tokens)
     mcp-server-fetch
+
+# Install mempalace. MEMPALACE_VERSION is passed by the Makefile (resolved from
+# PyPI at build time) and acts as a cache-buster — the layer reruns whenever a
+# new release is published.
+ARG MEMPALACE_VERSION=unknown
+RUN echo "Installing mempalace (upstream version: ${MEMPALACE_VERSION})" \
+    && pip3 install --break-system-packages mempalace
 
 # Install Node.js (LTS) via NodeSource
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
@@ -164,22 +170,21 @@ RUN mkdir -p /home/claudeuser/.local/bin/
 RUN curl -fsSL https://github.com/marp-team/marp-cli/releases/download/v4.3.1/marp-cli-v4.3.1-linux.tar.gz \
         | tar -xz -C /home/claudeuser/.local/bin/ marp
 
-# Install uv (fast Python package manager)
-# Skip if already installed (allows rebuild to reuse cached layer when network is unavailable).
-# Fails hard if neither condition is met — never silently continue without uv.
-RUN if [ -x "/home/claudeuser/.local/bin/uv" ]; then \
-      echo "uv already installed: $(/home/claudeuser/.local/bin/uv --version)"; \
-    else \
-      curl -LsSf https://astral.sh/uv/install.sh | sh; \
-    fi
+# Install uv (fast Python package manager).
+# UV_VERSION is passed by the Makefile (resolved from PyPI at build time) and
+# acts as a cache-buster — the layer reruns whenever a new uv release is out.
+ARG UV_VERSION=unknown
+RUN echo "Installing uv (upstream version: ${UV_VERSION})" \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install Claude Code using the official native installer
-# Skip if already installed (same network-resilience pattern as uv above).
-RUN if [ -x "/home/claudeuser/.local/bin/claude" ]; then \
-      echo "claude already installed: $(/home/claudeuser/.local/bin/claude --version)"; \
-    else \
-      curl -fsSL https://claude.ai/install.sh | bash; \
-    fi
+# Install Claude Code using the official native installer.
+# CLAUDE_VERSION is passed by the Makefile (resolved from the npm registry at
+# build time).  Its sole purpose is cache-busting: Docker invalidates this
+# layer — and every layer after it — whenever a new version is published, so
+# `make build` always installs the latest release without needing --no-cache.
+ARG CLAUDE_VERSION=unknown
+RUN echo "Installing Claude Code (upstream version: ${CLAUDE_VERSION})" \
+    && curl -fsSL https://claude.ai/install.sh | bash
 
 # Add Claude Code to PATH
 ENV PATH="/home/claudeuser/.local/bin:${PATH}"

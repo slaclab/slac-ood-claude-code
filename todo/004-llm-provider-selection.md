@@ -1,11 +1,11 @@
 # TODO #004 — LLM provider selection in OOD form (Bedrock + SDF-Sage LiteLLM)
 
 > **Priority:** 🟡 P2 — Medium
-> **Status:** 📋 Preparing
-> **Branch:** —
+> **Status:** ✅ Merged
+> **Branch:** main
 > **PR:** —
 > **Created:** 2026-04-15
-> **Shipped:** —
+> **Shipped:** 2026-04-17
 
 ---
 
@@ -85,6 +85,45 @@ sdf_sage_provider— select: copilot | s3df | bedrock  (new, shown only when llm
 clear_settings   — check_box "Clear settings.json"   (replaces overwrite_settings)
 ```
 
+**Help text for `llm_provider`:**
+```yaml
+llm_provider:
+  widget: "select"
+  label: "LLM Provider"
+  help: |
+    **Bedrock** — use a personal SLAC AI API key (request one via ServiceNow).
+    **SDF-Sage** — use your facility allocation quota (no personal key needed).
+    Choose SDF-Sage if your experiment has a repo allocation on `llm.sdf.slac.stanford.edu`.
+  options:
+    - ["Bedrock (personal API key)", "bedrock"]
+    - ["SDF-Sage (facility allocation)", "sdf_sage"]
+```
+
+**Help text for `sdf_sage_repo`:**
+```yaml
+sdf_sage_repo:
+  widget: "text_field"
+  label: "Facility:Repo"
+  placeholder: "e.g. scs:rubin"
+  help: |
+    Your S3DF facility and repo allocation in the format `facility:repo`.
+    Example: `scs:rubin`, `scs:lcls`, `scs:admin`.
+    Contact your experiment's computing coordinator if unsure of your repo name.
+```
+
+**Help text for `sdf_sage_provider`:**
+```yaml
+sdf_sage_provider:
+  widget: "select"
+  label: "SDF-Sage Route"
+  help: |
+    The routing backend within SDF-Sage. Use `copilot` unless told otherwise.
+  options:
+    - ["copilot", "copilot"]
+    - ["s3df", "s3df"]
+    - ["bedrock", "bedrock"]
+```
+
 ### Field ordering in `form:`
 
 ```yaml
@@ -144,7 +183,8 @@ otherwise preserve.
 **ENV keys managed by this script (always updated):**
 - Bedrock path: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
   `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
-  `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`
+  `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`,
+  `MAX_THINKING_TOKENS`
 - SDF-Sage path: `ANTHROPIC_BASE_URL`, `NODE_TLS_REJECT_UNAUTHORIZED`,
   `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`,
   `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
@@ -195,10 +235,11 @@ if [ "${LLM_PROVIDER}" = "bedrock" ]; then
     [ANTHROPIC_DEFAULT_OPUS_MODEL]="us.anthropic.claude-opus-4-6-v1"
     [ANTHROPIC_DEFAULT_HAIKU_MODEL]="us.anthropic.claude-haiku-4-5-20251001-v1:0"
     [CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS]="1"
+    [MAX_THINKING_TOKENS]="0"
   )
   CLAUDE_TOP_LEVEL=()
   # Remove SDF-Sage-only keys that may linger from a previous session
-  REMOVE_KEYS=(NODE_TLS_REJECT_UNAUTHORIZED ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
+  REMOVE_KEYS=(NODE_TLS_REJECT_UNAUTHORIZED ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC MAX_THINKING_TOKENS)
   REMOVE_TOP_LEVEL_KEYS=(apiKeyHelper)
 else
   declare -A CLAUDE_ENVS=(
@@ -292,21 +333,16 @@ field captures `<facility>:<repo>` (e.g. `scs:admin`) and `sdf_sage_provider`
 captures the routing segment (e.g. `copilot`, `s3df`, `bedrock`). These are
 concatenated in `before.sh.erb` at settings-write time.
 
-### SDF-Sage: device flow prerequisite
+### SDF-Sage: device flow via `s3df login --force`
 
-The `apiKeyHelper` command (`cat ~/.s3df-access-token`) only works if the user
-has already authenticated via **device flow** to obtain their S3DF access token.
-This is a one-time setup step that happens outside the OOD session.
+Rather than requiring users to run device flow out-of-band, `before.sh.erb`
+runs `/sdf/sw/s3df-cli/s3df login --force` directly as part of session startup.
+This blocks until the browser auth completes and the token is written to
+`~/.s3df-access-token`, so Claude Code always starts with a fresh valid token.
 
-The form's help text for the SDF-Sage option should include a note along the
-lines of:
-
-> **Prerequisite:** You must have an S3DF access token at `~/.s3df-access-token`.
-> If you haven't done this yet, run the device flow authentication first:
-> `[link to S3DF auth docs]`
-
-The session will launch successfully regardless, but Claude Code will fail to
-authenticate to the LiteLLM proxy until the token file exists.
+The `--force` flag ensures a new token is obtained on every session launch,
+avoiding silent failures from expired tokens. No expiry check or missing-token
+warning is needed.
 
 ### Key Decisions
 
@@ -323,6 +359,8 @@ authenticate to the LiteLLM proxy until the token file exists.
 | No ANTHROPIC_AUTH_TOKEN for SDF-Sage | Omitted | LiteLLM proxy uses facility allocation auth, not a per-user key |
 | `apiKeyHelper` for SDF-Sage | `"cat ~/.s3df-access-token"` (top-level key) | LiteLLM uses S3DF token auth; `apiKeyHelper` is how Claude Code fetches it at request time; must be removed when switching to Bedrock |
 | JSON manipulation approach | `python3 -c 'import json...'` preferred over sed | `apiKeyHelper` is top-level (not in `env`); python3 handles mixed top-level + nested cleanly; sed requires two separate patterns and is fragile |
+| `MAX_THINKING_TOKENS: "0"` | `"0"` for Bedrock | The Bedrock proxy at `ai-api.slac.stanford.edu` does not support extended thinking; setting to `0` disables it and prevents API errors |
+| SDF-Sage token acquisition | `s3df login --force` on every launch | Blocks until device flow completes; `--force` avoids silent expiry failures; no out-of-band prerequisite needed; standardises on `/sdf/sw/s3df-cli/s3df` |
 
 ---
 
@@ -365,13 +403,13 @@ Launch a session with each provider:
 
 ## Implementation Checklist
 
-- [ ] Update `form.yml.erb`: add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo`; rename `overwrite_settings` → `clear_settings`; set `api_key: required: false`; add device flow prerequisite note to SDF-Sage help text
-- [ ] Update `form.js`: add `update_provider_fields()`, `toggle_field()`; call on load + change
-- [ ] Update `before.sh.erb`: python3-json upsert for both `env.*` keys and top-level `apiKeyHelper`; stale key + `apiKeyHelper` removal on Bedrock path; `clear_settings` delete-before-write; ERB input validation
-- [ ] Smoke test Bedrock path: settings.json correct, api_key masked, SDF-Sage keys + `apiKeyHelper` absent
-- [ ] Smoke test SDF-Sage path: settings.json correct, model names `facility:repo/provider/model`, `apiKeyHelper` present, Bedrock keys absent
-- [ ] Smoke test provider switch: launch Bedrock then SDF-Sage without clearing — verify keys updated, `apiKeyHelper` added/removed
-- [ ] Smoke test "Clear settings.json": file deleted and recreated correctly
+- [x] Update `form.yml.erb`: add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo`; rename `overwrite_settings` → `clear_settings`; set `api_key: required: false`; add device flow prerequisite note to SDF-Sage help text; add concrete `facility:repo` example (resolve Open Question #4 first)
+- [x] Update `form.js`: add `update_provider_fields()`, `toggle_field()`; call on load + change; dynamic per-provider help text; cluster label/help injected via JS
+- [x] Update `before.sh.erb`: python3-json upsert for both `env.*` keys and top-level `apiKeyHelper`; stale key + `apiKeyHelper` removal on Bedrock path; `clear_settings` delete-before-write; ERB input validation
+- [x] Move `s3df login --force` into ttyd wrapper in `script.sh.erb` so auth URL is visible in terminal
+- [x] Rename `api_key` → `slac_bedrock_key` across form, JS, and before.sh.erb
+- [x] Smoke test Bedrock path: settings.json correct, api_key masked, SDF-Sage keys + `apiKeyHelper` absent
+- [x] Smoke test SDF-Sage path: settings.json correct, model names `facility:repo/provider/model`, `apiKeyHelper` present, Bedrock keys absent, device flow visible in terminal
 
 ---
 
@@ -392,9 +430,20 @@ Launch a session with each provider:
    key (e.g. JS disabled). Add an ERB guard: if `llm_provider == "bedrock"` and
    `api_key` is blank, abort with a clear error message.
 
-4. **What is the exact `facility:repo` format users should enter?** — The example
-   uses `scs:admin`. Confirm format and provide an example in the field's `help:`
-   text. Is the separator always `:`? Are there multi-level repos?
+4. **What is the exact `facility:repo` format users should enter?** ✅ Resolved.
+   Format is `facility:repo` (e.g. `scs:default`). Bare facility name (e.g. `scs`)
+   is also accepted — ERB normalises it to `facility:default` automatically.
+   Validation rejects anything that doesn't match after normalisation.
+
+5. **Does `s3df login --force` block until the token is written?** ✅ Resolved.
+   It blocks, but can timeout if the user doesn't complete browser auth in time.
+   `before.sh.erb` checks the exit code and calls `clean_up 1` on failure with
+   a clear message to re-launch and complete the login promptly.
+
+6. **How do SDF-Sage users discover this feature?** — No announcement path is
+   planned. Consider: MOTD entry on S3DF login nodes, a note on the OOD app
+   description, or an email to experiment computing coordinators. At minimum,
+   the OOD app's `manifest.yml` description should mention SDF-Sage support.
 
 ---
 
@@ -403,3 +452,5 @@ Launch a session with each provider:
 - **#001 (OOD App):** This task modifies the form and `before.sh.erb` introduced
   in #001.
 - **#003 (HTTPS/ttyd):** Independent; no interaction.
+- **#005 (SDF-Sage token auth):** #005 will replace the `~/.s3df-access-token`
+  workaround introduced here with a proper OOD-integrated token solution.

@@ -1,32 +1,52 @@
 ---
 cluster: '*'
 form:
-  - api_key
-  - cluster
   - sif_version
+  - llm_provider
+  - slac_bedrock_key
+  - sdf_sage_repo
+  - sdf_sage_provider
+  - cluster
   - working_dir
   - bc_num_hours
   - bc_email_on_started
-  - overwrite_settings
+  - clear_settings
 attributes:
-  api_key:
+  llm_provider:
+    widget: "select"
+    label: "LLM Provider"
+    help: " "
+    options:
+      - ["Bedrock (personal API key)", "bedrock"]
+      - ["SDF-Sage (facility allocation)", "sdf_sage"]
+  slac_bedrock_key:
     widget: "text_field"
     label: "SLAC AI API Key"
     help: |
       Request a [SLAC AI API Bedrock Key](https://slacprod.servicenowservices.com/it_services?id=sc_cat_item&sys_id=515f28711b607110c5d320eae54bcb64&sysparm_category=d65827c46fd921009c4235af1e3ee434).
-    required: true
-  overwrite_settings:
-    widget: "check_box"
-    label: "Overwrite existing settings"
+    required: false
+  sdf_sage_provider:
+    widget: "select"
+    label: "LLM Provider"
     help: |
-      Overwrites `~/.claude/settings.json` with the API key above. Use after a key rotation or to reset to defaults.
-    value: "0"
+      The routing backend within SDF-Sage. Use `copilot` unless told otherwise by your experiment's computing coordinator.
+    options:
+      - ["copilot", "copilot"]
+      - ["s3df", "s3df"]
+      - ["bedrock", "bedrock"]
+  sdf_sage_repo:
+    widget: "text_field"
+    label: "Coact Repo"
+    placeholder: "e.g. scs:default"
+    help: |
+      Your S3DF facility and repo allocation. Enter either:
+      - `facility` — uses `facility:default` automatically
+      - `facility:repo` — uses the specified repo
+
+      Contact your experiment's computing coordinator if unsure of your facility or repo name.
+      Authentication will happen automatically when the session starts.
   cluster:
-    label: "Interactive Cluster"
-    help: |
-      The S3DF interactive cluster to run Claude Code on. Available clusters:
-      **iana** (general), **rubin**, **psana**, **suncat**, **supercdms**, **neutrino**, **mli**.
-      Choose the one associated with your experiment or data.
+    label: "Run on Cluster"
   sif_version:
     widget: "select"
     label: "Claude Code Version"
@@ -59,3 +79,12 @@ attributes:
     min: 1
     max: 168
     step: 1
+  clear_settings:
+    widget: "check_box"
+    label: "Clear settings.json"
+    help: |
+      Deletes `~/.claude/settings.json` before starting, allowing Claude Code
+      to recreate it from scratch. Use after a major config reset or corruption.
+      Your provider and API key will be written fresh. **All other customisations
+      (permissions, keybindings, etc.) will be lost.**
+    value: "0"

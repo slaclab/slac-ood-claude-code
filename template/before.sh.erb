@@ -33,38 +33,109 @@ if [ ! -f "${SINGULARITY_IMAGE_PATH}" ]; then
   clean_up 1
 fi
 
-# Write ~/.claude/settings.json — overwrite if checked, write-if-absent otherwise
-SHOULD_OVERWRITE="<%= context.overwrite_settings == "1" ? "yes" : "no" %>"
-if [ ! -f "${HOME}/.claude/settings.json" ] || [ "${SHOULD_OVERWRITE}" = "yes" ]; then
-  mkdir -p "${HOME}/.claude"
-  # Back up existing settings before overwriting
-  if [ "${SHOULD_OVERWRITE}" = "yes" ] && [ -f "${HOME}/.claude/settings.json" ]; then
-    BACKUP="${HOME}/.claude/settings.json.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "${HOME}/.claude/settings.json" "${BACKUP}"
-    echo "Backed up existing settings to ${BACKUP}"
-  fi
-  (
-  umask 077
-  DELIM="SETTINGS_EOF_${RANDOM}"
-  cat > "${HOME}/.claude/settings.json" << ${DELIM}
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://ai-api.slac.stanford.edu",
-    "ANTHROPIC_AUTH_TOKEN": "<%= context.api_key %>",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "us.anthropic.claude-sonnet-4-6",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "us.anthropic.claude-opus-4-6-v1",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
-  }
-}
-${DELIM}
-  )
-  chmod go-rwx "${HOME}/.claude/settings.json"
-  if [ "${SHOULD_OVERWRITE}" = "yes" ]; then
-    echo "Overwrote ~/.claude/settings.json with API key from form."
-  else
-    echo "Wrote ~/.claude/settings.json with API key from form."
-  fi
-else
-  echo "~/.claude/settings.json already exists — preserving existing config."
+# Update ~/.claude/settings.json for the selected LLM provider.
+#
+# Strategy: always update the relevant ENV keys on every launch using python3+json
+# so that switching providers between sessions Just Works. The "Clear settings.json"
+# checkbox deletes the file first (full reset); the normal path preserves all other
+# user customisations (keybindings, permissions, etc.).
+<%
+  llm_provider   = context.llm_provider.to_s.strip
+  api_key        = context.slac_bedrock_key.to_s.strip
+  sdf_provider   = context.sdf_sage_provider.to_s.strip
+  sdf_repo       = context.sdf_sage_repo.to_s.strip
+  # Normalise: bare facility name → facility:default
+  sdf_repo       = "#{sdf_repo}:default" unless sdf_repo.include?(":")
+  # Validate final facility:repo format
+  sdf_repo       = "" unless sdf_repo.match?(/\A[A-Za-z0-9_\-]+:[A-Za-z0-9_\-\/]+\z/)
+  sdf_provider   = "" unless sdf_provider.match?(/\A[A-Za-z0-9_\-]+\z/)
+  clear_settings = context.clear_settings == "1"
+
+  if llm_provider == "bedrock" && api_key.empty?
+    raise "Bedrock provider selected but API key is blank. Please enter your SLAC AI API key."
+  end
+%>
+
+SETTINGS="${HOME}/.claude/settings.json"
+
+<% if clear_settings %>
+# Clear settings.json (checkbox was ticked)
+if [ -f "${SETTINGS}" ]; then
+  BACKUP="${SETTINGS}.bak.$(date +%Y%m%d_%H%M%S)"
+  mv "${SETTINGS}" "${BACKUP}"
+  echo "Cleared settings.json (backed up to ${BACKUP})"
 fi
+<% end %>
+
+# Ensure ~/.claude and a minimal settings.json exist
+mkdir -p "${HOME}/.claude"
+if [ ! -f "${SETTINGS}" ]; then
+  (umask 077; printf '{"env":{}}\n' > "${SETTINGS}")
+fi
+
+<% if llm_provider == "bedrock" %>
+# --- Bedrock provider ---
+python3 - "${SETTINGS}" << 'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    s = json.load(f)
+s.setdefault("env", {})
+s["env"].update({
+    "ANTHROPIC_BASE_URL":                    "https://ai-api.slac.stanford.edu",
+    "ANTHROPIC_AUTH_TOKEN":                  "<%= api_key %>",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL":        "us.anthropic.claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL":          "us.anthropic.claude-opus-4-6-v1",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL":         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":"1",
+    "MAX_THINKING_TOKENS":                   "0",
+})
+# Remove SDF-Sage-only keys that may linger from a previous session
+for k in ["NODE_TLS_REJECT_UNAUTHORIZED", "ANTHROPIC_SMALL_FAST_MODEL",
+          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]:
+    s["env"].pop(k, None)
+# Remove apiKeyHelper — would interfere with Bedrock auth
+s.pop("apiKeyHelper", None)
+with open(path, "w") as f:
+    json.dump(s, f, indent=2)
+PYEOF
+echo "Updated ~/.claude/settings.json for provider: bedrock"
+
+<% else %>
+# --- SDF-Sage provider ---
+<% if sdf_repo.empty? || sdf_provider.empty? %>
+echo "ERROR: SDF-Sage selected but facility:repo or provider is blank or invalid." >&2
+clean_up 1
+<% end %>
+
+# Obtain a fresh S3DF token via device flow — blocks until browser auth completes
+# (moved to script.sh.erb so the user sees the auth URL in the terminal window)
+
+python3 - "${SETTINGS}" << 'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    s = json.load(f)
+s.setdefault("env", {})
+s["env"].update({
+    "ANTHROPIC_BASE_URL":                  "https://llm.sdf.slac.stanford.edu",
+    "NODE_TLS_REJECT_UNAUTHORIZED":        "0",
+    "ANTHROPIC_SMALL_FAST_MODEL":          "<%= sdf_repo %>/<%= sdf_provider %>/claude-haiku-4.5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL":       "<%= sdf_repo %>/<%= sdf_provider %>/claude-haiku-4.5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL":      "<%= sdf_repo %>/<%= sdf_provider %>/claude-sonnet-4.6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL":        "<%= sdf_repo %>/<%= sdf_provider %>/claude-opus-4.6",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+})
+# Remove Bedrock-only keys that may linger from a previous session
+for k in ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+          "MAX_THINKING_TOKENS"]:
+    s["env"].pop(k, None)
+# Set apiKeyHelper at top level — Claude Code uses this to fetch the S3DF token
+s["apiKeyHelper"] = "cat ~/.s3df-access-token"
+with open(path, "w") as f:
+    json.dump(s, f, indent=2)
+PYEOF
+echo "Updated ~/.claude/settings.json for provider: sdf_sage"
+<% end %>
+
+chmod go-rwx "${SETTINGS}"

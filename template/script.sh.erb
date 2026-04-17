@@ -22,6 +22,14 @@ cd "${WORKING_DIR}"
 # --writable: enable PTY input (required for interactive claude-code)
 # Note: --check-origin omitted — OOD's reverse proxy sends a different Origin header
 #   than ttyd's listening address, causing WebSocket connections to be refused.
+<%
+  llm_provider = context.llm_provider.to_s.strip
+  if llm_provider == "sdf_sage"
+    ttyd_cmd = '/sdf/sw/s3df-cli/bin/s3df login --force && echo "Authentication complete. Starting Claude Code..." && exec claude'
+  else
+    ttyd_cmd = 'exec claude'
+  end
+%>
 apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
   ttyd \
     --port ${port} \
@@ -29,7 +37,7 @@ apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
     --auth-header X-Forwarded-User \
     --credential-file "${TTYD_CRED_FILE}" \
     --writable \
-    claude &
+    bash -c '<%= ttyd_cmd %>' &
 TTYD_PID=$!
 
 # ttyd reads --credential-file once at startup into memory; the file is dead weight

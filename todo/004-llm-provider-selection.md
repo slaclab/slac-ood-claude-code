@@ -150,7 +150,18 @@ otherwise preserve.
   `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
 
-Keys not in this list (user customisations) are left untouched.
+**Top-level settings keys managed (SDF-Sage only):**
+- `apiKeyHelper`: `"cat ~/.s3df-access-token"` — LiteLLM uses an S3DF access
+  token rather than a static API key; this helper command is run by Claude Code
+  to obtain the token at request time.
+
+Note: `apiKeyHelper` is a **top-level** key in `settings.json`, not nested
+inside `env`. The sed upsert logic must handle both `env.*` keys and this
+top-level key separately. When switching to Bedrock, `apiKeyHelper` must be
+removed (it would interfere with Bedrock auth). The `python3 json` approach is
+cleaner here than sed for a mixed top-level + nested update.
+
+Keys not in these lists (user customisations) are left untouched.
 
 ```bash
 <%
@@ -185,8 +196,10 @@ if [ "${LLM_PROVIDER}" = "bedrock" ]; then
     [ANTHROPIC_DEFAULT_HAIKU_MODEL]="us.anthropic.claude-haiku-4-5-20251001-v1:0"
     [CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS]="1"
   )
+  CLAUDE_TOP_LEVEL=()
   # Remove SDF-Sage-only keys that may linger from a previous session
   REMOVE_KEYS=(NODE_TLS_REJECT_UNAUTHORIZED ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
+  REMOVE_TOP_LEVEL_KEYS=(apiKeyHelper)
 else
   declare -A CLAUDE_ENVS=(
     [ANTHROPIC_BASE_URL]="https://llm.sdf.slac.stanford.edu"
@@ -197,8 +210,10 @@ else
     [ANTHROPIC_DEFAULT_OPUS_MODEL]="<%= sdf_repo %>/<%= sdf_provider %>/claude-opus-4.6"
     [CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC]="1"
   )
+  CLAUDE_TOP_LEVEL=( [apiKeyHelper]="cat ~/.s3df-access-token" )
   # Remove Bedrock-only keys that may linger from a previous session
   REMOVE_KEYS=(ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
+  REMOVE_TOP_LEVEL_KEYS=()
 fi
 
 # Ensure settings.json exists with minimal structure if absent
@@ -243,8 +258,10 @@ echo "Updated ~/.claude/settings.json for provider: ${LLM_PROVIDER}"
 > **Note:** The `upsert_env_key` sed logic above is indicative. The exact
 > implementation should be validated against real settings.json files —
 > especially the append-if-absent branch, which depends on the file's
-> formatting. An alternative is to use `python3 -c` with `json` module for
-> reliable JSON manipulation if sed proves fragile.
+> formatting. Because `apiKeyHelper` is a **top-level key** (not inside `env`),
+> a pure sed approach requires two separate patterns. Using `python3 -c` with
+> the `json` module is strongly preferred — it handles both `env.*` keys and
+> top-level keys cleanly and is immune to JSON formatting variations.
 
 ### "Clear settings.json" checkbox
 
@@ -275,6 +292,22 @@ field captures `<facility>:<repo>` (e.g. `scs:admin`) and `sdf_sage_provider`
 captures the routing segment (e.g. `copilot`, `s3df`, `bedrock`). These are
 concatenated in `before.sh.erb` at settings-write time.
 
+### SDF-Sage: device flow prerequisite
+
+The `apiKeyHelper` command (`cat ~/.s3df-access-token`) only works if the user
+has already authenticated via **device flow** to obtain their S3DF access token.
+This is a one-time setup step that happens outside the OOD session.
+
+The form's help text for the SDF-Sage option should include a note along the
+lines of:
+
+> **Prerequisite:** You must have an S3DF access token at `~/.s3df-access-token`.
+> If you haven't done this yet, run the device flow authentication first:
+> `[link to S3DF auth docs]`
+
+The session will launch successfully regardless, but Claude Code will fail to
+authenticate to the LiteLLM proxy until the token file exists.
+
 ### Key Decisions
 
 | Decision | Choice | Rationale |
@@ -288,7 +321,8 @@ concatenated in `before.sh.erb` at settings-write time.
 | `NODE_TLS_REJECT_UNAUTHORIZED: "0"` | Included for SDF-Sage | LiteLLM proxy uses self-signed cert; required for Claude Code to connect |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `"1"` for SDF-Sage only | Prevents Claude Code calling anthropic.com for telemetry/updates when routing through LiteLLM |
 | No ANTHROPIC_AUTH_TOKEN for SDF-Sage | Omitted | LiteLLM proxy uses facility allocation auth, not a per-user key |
-| api_key `required: true` | Change to `required: false` | JS `disabled` attr prevents submission when SDF-Sage is selected; server-side guard in `before.sh.erb` handles edge cases |
+| `apiKeyHelper` for SDF-Sage | `"cat ~/.s3df-access-token"` (top-level key) | LiteLLM uses S3DF token auth; `apiKeyHelper` is how Claude Code fetches it at request time; must be removed when switching to Bedrock |
+| JSON manipulation approach | `python3 -c 'import json...'` preferred over sed | `apiKeyHelper` is top-level (not in `env`); python3 handles mixed top-level + nested cleanly; sed requires two separate patterns and is fragile |
 
 ---
 
@@ -331,12 +365,12 @@ Launch a session with each provider:
 
 ## Implementation Checklist
 
-- [ ] Update `form.yml.erb`: add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo`; rename `overwrite_settings` → `clear_settings`; set `api_key: required: false`
+- [ ] Update `form.yml.erb`: add `llm_provider`, `sdf_sage_provider`, `sdf_sage_repo`; rename `overwrite_settings` → `clear_settings`; set `api_key: required: false`; add device flow prerequisite note to SDF-Sage help text
 - [ ] Update `form.js`: add `update_provider_fields()`, `toggle_field()`; call on load + change
-- [ ] Update `before.sh.erb`: sed-based upsert; stale key removal; `clear_settings` delete-before-write; ERB input validation
-- [ ] Smoke test Bedrock path: settings.json correct, api_key masked, SDF-Sage keys absent
-- [ ] Smoke test SDF-Sage path: settings.json correct, model names formatted as `facility:repo/provider/model`, Bedrock keys absent
-- [ ] Smoke test provider switch: launch Bedrock, then SDF-Sage without clearing — verify keys updated
+- [ ] Update `before.sh.erb`: python3-json upsert for both `env.*` keys and top-level `apiKeyHelper`; stale key + `apiKeyHelper` removal on Bedrock path; `clear_settings` delete-before-write; ERB input validation
+- [ ] Smoke test Bedrock path: settings.json correct, api_key masked, SDF-Sage keys + `apiKeyHelper` absent
+- [ ] Smoke test SDF-Sage path: settings.json correct, model names `facility:repo/provider/model`, `apiKeyHelper` present, Bedrock keys absent
+- [ ] Smoke test provider switch: launch Bedrock then SDF-Sage without clearing — verify keys updated, `apiKeyHelper` added/removed
 - [ ] Smoke test "Clear settings.json": file deleted and recreated correctly
 
 ---

@@ -22,6 +22,7 @@ MEMPALACE_VERSION := $(shell curl -fsSL https://pypi.org/pypi/mempalace/json \
                          | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
 
 SIF_FILE = $(IMAGE)_$(CLAUDE_VERSION).sif
+SIF_TARGET_DIR = /sdf/sw/claude-code/
 
 .PHONY: all build build-no-cache push login apptainer clean help
 
@@ -48,7 +49,7 @@ build-no-cache:
 
 ## apptainer: convert the Docker image to an Apptainer .sif file (e.g. claude-code_2.1.101.sif)
 apptainer:
-	apptainer build $(SIF_FILE) docker://$(VERSIONED_IMAGE)
+	apptainer build $(SIF_TARGET_DIR)/$(SIF_FILE) docker://$(VERSIONED_IMAGE)
 
 ## push: push the image to DockerHub (both :latest and :<claude-version> tags)
 push:

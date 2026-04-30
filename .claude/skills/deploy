@@ -58,13 +58,21 @@ git fetch origin prod
 git log --oneline prod..origin/prod            # what's on remote that isn't local?
 ```
 
-## Step 4 — Restart affected OOD pods (optional)
+## Step 4 — Update the live sidecar (no restart needed)
 
-The gitclone sidecar runs `git pull origin prod` in a loop (every ~60s), so pods
-will self-update without a restart. To force an immediate pickup:
+The emptyDir is populated once at pod start by the gitclone init container. After
+pushing `prod`, the running sidecar can pick up the new code immediately with a
+`git pull` — no pod restart required:
 
 ```bash
-export KUBECONFIG=/sdf/home/y/ytl/.kube//contexts/ondemand/prod
+export KUBECONFIG=/sdf/home/y/ytl/.kube/contexts/ondemand-dev/dev
+POD=$(kubectl -n dev get pods -l app=ondemand -o name | head -1)
+kubectl -n dev exec ${POD} -c slac-ood-claude-code -- git -C /app pull origin prod
+```
+
+To force a full restart instead (e.g. if the sidecar is stuck):
+
+```bash
 # Dev overlay
 kubectl -n dev rollout restart deployment/ondemand
 kubectl -n dev rollout status  deployment/ondemand
@@ -78,13 +86,11 @@ kubectl -n prod rollout status  deployment/ondemand
 
 ## Step 5 — Verify
 
-After pods are running, confirm the gitclone sidecar pulled the latest commit:
-
 ```bash
-export KUBECONFIG=/sdf/home/y/ytl/.kube//contexts/ondemand/prod
+export KUBECONFIG=/sdf/home/y/ytl/.kube/contexts/ondemand-dev/dev
 POD=$(kubectl -n dev get pods -l app=ondemand -o name | head -1)
 
-# Check the slac-ood-claude-code sidecar picked up the new code
+# Check the slac-ood-claude-code sidecar is on the right commit
 kubectl -n dev exec ${POD} -c slac-ood-claude-code -- git -C /app log --oneline -3
 
 # Check app files are visible to the main container

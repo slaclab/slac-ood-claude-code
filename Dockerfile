@@ -107,7 +107,9 @@ RUN pip3 install --break-system-packages \
     # Data / validation
     pydantic \
     # MCP server: fetch URLs and convert to markdown (saves tokens)
-    mcp-server-fetch
+    mcp-server-fetch \
+    # Code knowledge graph generator
+    graphifyy
 
 # Install mempalace. MEMPALACE_VERSION is passed by the Makefile (resolved from
 # PyPI at build time) and acts as a cache-buster — the layer reruns whenever a
@@ -120,6 +122,9 @@ RUN echo "Installing mempalace (upstream version: ${MEMPALACE_VERSION})" \
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Install GitNexus (code intelligence / knowledge graph engine)
+RUN npm install -g gitnexus
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

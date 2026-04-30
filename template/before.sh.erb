@@ -82,20 +82,21 @@ with open(path) as f:
     s = json.load(f)
 s.setdefault("env", {})
 s["env"].update({
-    "ANTHROPIC_BASE_URL":                    "https://ai-api.slac.stanford.edu",
-    "ANTHROPIC_AUTH_TOKEN":                  "<%= api_key %>",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL":        "us.anthropic.claude-sonnet-4-6",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL":          "us.anthropic.claude-opus-4-6-v1",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL":         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":"1",
-    "MAX_THINKING_TOKENS":                   "0",
+    "ANTHROPIC_BASE_URL":                         "https://ai-api.slac.stanford.edu",
+    "ANTHROPIC_AUTH_TOKEN":                       "<%= api_key %>",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL":             "us.anthropic.claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL":               "us.anthropic.claude-opus-4-6-v1",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL":              "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":     "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":   "1",
 })
 # Remove SDF-Sage-only keys that may linger from a previous session
-for k in ["NODE_TLS_REJECT_UNAUTHORIZED", "ANTHROPIC_SMALL_FAST_MODEL",
-          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]:
+for k in ["NODE_TLS_REJECT_UNAUTHORIZED", "ANTHROPIC_SMALL_FAST_MODEL"]:
     s["env"].pop(k, None)
 # Remove apiKeyHelper — would interfere with Bedrock auth
 s.pop("apiKeyHelper", None)
+s["skipWebFetchPreflight"] = True
+s["attribution"] = {"commit": "Generated with AI\n\nCo-Authored-By: SLAC AI", "pr": ""}
 with open(path, "w") as f:
     json.dump(s, f, indent=2)
 PYEOF
@@ -104,7 +105,7 @@ echo "Updated ~/.claude/settings.json for provider: bedrock"
 <% else %>
 # --- SDF-Sage provider ---
 <% if sdf_repo.empty? || sdf_provider.empty? %>
-echo "ERROR: SDF-Sage selected but facility:repo or provider is blank or invalid." >&2
+echo "ERROR: SDF-SAGE selected but facility:repo or provider is blank or invalid." >&2
 clean_up 1
 <% end %>
 

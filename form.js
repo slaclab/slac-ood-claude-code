@@ -68,8 +68,18 @@ function update_provider_fields() {
   $help.html(help_text);
 }
 
+// Disable SDF-SAGE option (coming soon — not yet available)
+function disable_sdf_sage() {
+  const $opt = $('#batch_connect_session_context_llm_provider option[value="sdf_sage"]');
+  $opt.prop('disabled', true).text($opt.text() + ' (coming soon)');
+  // If it was somehow pre-selected, fall back to bedrock
+  const $sel = $('#batch_connect_session_context_llm_provider');
+  if ($sel.val() === 'sdf_sage') $sel.val('bedrock').trigger('change');
+}
+
 // Main
 filter_interactive_clusters();
 mask_api_key();
+disable_sdf_sage();
 $('#batch_connect_session_context_llm_provider').on('change', update_provider_fields);
 update_provider_fields();

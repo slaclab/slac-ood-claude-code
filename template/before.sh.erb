@@ -25,6 +25,16 @@ if [ -z "${WORKING_DIR}" ] || [ ! -d "${WORKING_DIR}" ]; then
   export WORKING_DIR="${HOME}"
 fi
 
+# Extra apptainer bind mounts — validated to safe path characters only (no shell metacharacters).
+# Exported as APPTAINER_BIND; apptainer merges these with the -B flag in script.sh.erb.
+<%
+  extra_binds = context.apptainer_bind_mounts.to_s.strip.gsub(/\s+/, '')
+  extra_binds = "" unless extra_binds.match?(%r{\A[A-Za-z0-9_./:,-]*\z})
+%>
+<% unless extra_binds.empty? %>
+export APPTAINER_BIND="<%= extra_binds %>"
+<% end %>
+
 # SIF image path — selected by user from version dropdown
 # context.sif_version is the full path set by form.js (e.g. /sdf/sw/ai/claude-code/claude-code_2.1.104.sif)
 export SINGULARITY_IMAGE_PATH="<%= context.sif_version %>"

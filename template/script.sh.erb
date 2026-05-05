@@ -33,8 +33,15 @@ cd "${WORKING_DIR}"
 # Create the ttyd credential file immediately before launching ttyd.
 # Kept here rather than in before.sh.erb so file creation and consumption happen
 # in the same script with no filesystem propagation gap between them.
+# mkdir -p guards against ~/ondemand/ not existing (OOD creates it, but not always
+# before this script runs on first launch).
 TTYD_CRED_FILE="${HOME}/ondemand/.ttyd-$$.cred"
+mkdir -p "${HOME}/ondemand"
 (umask 077; printf '%s:%s' "${USER}" "$(openssl rand -base64 16 | tr -d '=+/')" > "${TTYD_CRED_FILE}")
+if [ ! -f "${TTYD_CRED_FILE}" ]; then
+  echo "ERROR: failed to create ttyd credential file: ${TTYD_CRED_FILE}" >&2
+  clean_up 1
+fi
 
 apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
   ttyd \
@@ -48,9 +55,11 @@ TTYD_PID=$!
 
 # ttyd reads --credential-file once at startup into memory; the file is dead weight
 # after that. Delete it to minimise the on-disk exposure window.
-# Wait for the port to be open before deleting — apptainer startup can exceed a fixed
-# sleep on a cold node, causing ttyd to fail with "cannot open credential file".
-wait_until_port_used "${host}:${port}" 30
+# sleep rather than wait_until_port_used: the port-check helpers (nc, lsof, python)
+# are not reliably available in the default SIF environment, causing
+# wait_until_port_used to call the port_used_command_not_found stub and spin for
+# its full timeout while flooding stderr with "command not found".
+sleep 5
 rm -f "${TTYD_CRED_FILE}"
 
 wait ${TTYD_PID}

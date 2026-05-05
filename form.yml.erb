@@ -8,7 +8,6 @@ form:
   - sdf_sage_provider
   - cluster
   - working_dir
-  - apptainer_bind_mounts
   - bc_num_hours
   - bc_email_on_started
   - clear_settings
@@ -71,15 +70,6 @@ attributes:
     placeholder: "$HOME (default)"
     help: |
       Directory where Claude Code will start. Leave blank for your home directory.
-  apptainer_bind_mounts:
-    widget: "text_field"
-    label: "Additional Bind Mounts"
-    value: ""
-    placeholder: "e.g. /sdf/data/rubin:ro,/sdf/scratch/rubin"
-    help: |
-      Extra paths to bind-mount into the container, comma-separated.
-      Each entry may include `:ro` (read-only) or `:rw` (read-write).
-      The standard mounts (`/sdf`, `/fs`, `/lscratch`) are always included.
   bc_num_hours:
     widget: "number_field"
     label: "Session Duration (hours)"

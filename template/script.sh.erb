@@ -30,6 +30,12 @@ cd "${WORKING_DIR}"
     ttyd_cmd = 'exec claude'
   end
 %>
+# Create the ttyd credential file immediately before launching ttyd.
+# Kept here rather than in before.sh.erb so file creation and consumption happen
+# in the same script with no filesystem propagation gap between them.
+TTYD_CRED_FILE="${HOME}/ondemand/.ttyd-$$.cred"
+(umask 077; printf '%s:%s' "${USER}" "$(openssl rand -base64 16 | tr -d '=+/')" > "${TTYD_CRED_FILE}")
+
 apptainer exec -B /sdf,/fs,/lscratch "${CLAUDE_SIF}" \
   ttyd \
     --port ${port} \
@@ -42,7 +48,9 @@ TTYD_PID=$!
 
 # ttyd reads --credential-file once at startup into memory; the file is dead weight
 # after that. Delete it to minimise the on-disk exposure window.
-sleep 2
+# Wait for the port to be open before deleting — apptainer startup can exceed a fixed
+# sleep on a cold node, causing ttyd to fail with "cannot open credential file".
+wait_until_port_used "${host}:${port}" 30
 rm -f "${TTYD_CRED_FILE}"
 
 wait ${TTYD_PID}

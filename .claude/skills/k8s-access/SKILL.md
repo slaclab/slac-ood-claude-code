@@ -1,0 +1,92 @@
+---
+name: k8s-access
+description: Kubeconfig paths, overlay locations, and deploy and hostPath smoke-test steps for the OOD Kubernetes dev cluster that hosts slac-ood-claude-code.
+---
+
+# k8s-access — OOD Kubernetes Cluster Access
+
+## Kubeconfigs
+
+| Environment | KUBECONFIG path |
+|-------------|----------------|
+| dev         | `/sdf/home/y/ytl/.kube/contexts/ondemand-dev/dev` |
+
+Set before any kubectl/kustomize command:
+```bash
+export KUBECONFIG=/sdf/home/y/ytl/.kube/contexts/ondemand-dev/dev
+```
+
+## Overlay paths
+
+| Environment | Overlay |
+|-------------|---------|
+| dev  | `../slac-ondemand/kubernetes/overlays/dev/` |
+| prod | `../slac-ondemand/kubernetes/overlays/prod/` |
+
+## Deploying
+
+The overlay Makefile is at `../slac-ondemand/kubernetes/overlays/dev/Makefile`.
+It fetches vault secrets, applies, and cleans up automatically.
+
+```bash
+export KUBECONFIG=/sdf/home/y/ytl/.kube/contexts/ondemand-dev/dev
+make -C ../slac-ondemand/kubernetes/overlays/dev apply
+```
+
+Requires a valid vault token before running. The Makefile checks that the
+current kubectl context is `ondemand-dev` before applying.
+
+Restart pods to pick up changes (e.g. after applying a new overlay or switching volume mode):
+```bash
+kubectl rollout restart deployment/ondemand -n dev
+kubectl rollout status  deployment/ondemand -n dev
+```
+
+## slac-ood-claude-code app mount
+
+App files live at the **repo root** (not a `bc_claude_code/` subdirectory).
+The volumeMount in `ondemand-patch.yaml` is:
+```yaml
+- name: slac-ood-claude-code
+  mountPath: /var/www/ood/apps/sys/bc_claude_code/
+  readOnly: true
+```
+
+### Dev smoke-testing — hostPath live mount
+
+To iterate quickly without git push cycles, temporarily replace the `emptyDir` +
+gitclone sidecar with a hostPath pointing at the working checkout:
+
+**1. Comment out the `slac-ood-claude-code` gitclone sidecar** in `overlays/dev/ondemand-patch.yaml`.
+
+**2. Replace the volume:**
+```yaml
+- name: slac-ood-claude-code
+  hostPath:
+    path: /sdf/home/y/ytl/k8s/ondemand/slac-ood-claude-code/
+    type: Directory
+```
+
+**3. Apply and restart:**
+```bash
+make -C ../slac-ondemand/kubernetes/overlays/dev apply
+kubectl rollout restart deployment/ondemand -n dev
+```
+
+File changes are picked up immediately on the next pod restart — no git push needed.
+
+### Switching back to gitclone (prod-ready)
+
+After smoke-testing, restore the standard pattern before deploying:
+
+**1. Uncomment the `slac-ood-claude-code` gitclone sidecar.**
+
+**2. Restore the volume to emptyDir:**
+```yaml
+- name: slac-ood-claude-code
+  emptyDir: {}
+```
+
+**3. Push app changes to `prod` branch, apply overlay, restart pods.**
+
+Then run `/deploy` to promote `main` → `prod` and verify.

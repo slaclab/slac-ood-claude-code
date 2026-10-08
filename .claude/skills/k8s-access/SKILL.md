@@ -1,3 +1,8 @@
+---
+name: k8s-access
+description: Kubeconfig paths, overlay locations, and deploy and hostPath smoke-test steps for the OOD Kubernetes dev cluster that hosts slac-ood-claude-code.
+---
+
 # k8s-access — OOD Kubernetes Cluster Access
 
 ## Kubeconfigs

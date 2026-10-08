@@ -76,7 +76,8 @@ s["env"].update({
     "ANTHROPIC_BASE_URL":                         "https://ai-api.slac.stanford.edu",
     "ANTHROPIC_AUTH_TOKEN":                       "<%= api_key %>",
     "ANTHROPIC_DEFAULT_SONNET_MODEL":             "us.anthropic.claude-sonnet-5",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL":               "us.anthropic.claude-opus-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL":               "us.anthropic.claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL":              "us.anthropic.claude-fable-5-1",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL":              "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":     "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":   "1",
@@ -120,7 +121,7 @@ s["env"].update({
 })
 # Remove Bedrock-only keys that may linger from a previous session
 for k in ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
-          "MAX_THINKING_TOKENS"]:
+          "MAX_THINKING_TOKENS", "ANTHROPIC_DEFAULT_FABLE_MODEL"]:
     s["env"].pop(k, None)
 # Set apiKeyHelper at top level — Claude Code uses this to fetch the S3DF token
 s["apiKeyHelper"] = "cat ~/.s3df-access-token"
